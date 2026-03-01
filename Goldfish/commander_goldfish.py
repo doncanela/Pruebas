@@ -70,7 +70,16 @@ class Card:
         self.oracle_text: str = data.get("oracle_text", "")
         self.produced_mana: List[str] = data.get("produced_mana", [])
 
-        self.is_land: bool = "Land" in self.type_line
+        self._back_type_line: str = data.get("back_type_line", "")
+        self._back_oracle_text: str = data.get("back_oracle_text", "")
+
+        # A card counts as a land if its front face is a land, OR if it is a
+        # modal DFC whose back face is a land (e.g. Fell the Profane // Fell
+        # Mire).  MDFCs can be played as either face.
+        self.is_land: bool = (
+            "Land" in self.type_line
+            or "Land" in self._back_type_line
+        )
 
         # Cards whose mana can only be spent on abilities (e.g. Cryptic
         # Trilobite) cannot help cast the commander, so exclude them.
@@ -98,17 +107,99 @@ class Card:
             and not _x_cost_zero
         )
 
+        # Land-fetching ETB: cards that search your library for a land and put
+        # it onto the battlefield when they enter.  Common examples include
+        # Solemn Simulacrum, Burnished Hart, Knight of the White Orchid,
+        # Farhaven Elf, Wood Elves, Kor Cartographer, etc.
+        # Also matches ramp sorceries like Cultivate, Kodama's Reach,
+        # Nature's Lore, Three Visits, Skyshroud Claim, etc.
+        # The pattern matches "land" as well as basic land types like
+        # Forest, Island, Mountain, Swamp, Plains.
+        _LAND_WORD = r"(?:land|forest|island|mountain|swamp|plains)"
+        _etb_fetch = re.search(
+            r"(?:enters|enter|cast)"
+            rf".*search.*(?:your |a )library.*{_LAND_WORD}.*"
+            r"(?:put|onto).*battlefield",
+            self.oracle_text, re.IGNORECASE | re.DOTALL,
+        )
+        # Ramp sorceries/instants: "Search your library for a land/Forest card, put"
+        _ramp_spell = (
+            ("Sorcery" in self.type_line or "Instant" in self.type_line)
+            and bool(re.search(
+                rf"search.*(?:your |a )library.*{_LAND_WORD}.*"
+                r"(?:put|onto).*battlefield",
+                self.oracle_text, re.IGNORECASE | re.DOTALL,
+            ))
+        )
+        # Exclude fetchlands (Evolving Wilds, Terramorphic Expanse, Fabled
+        # Passage, Prismatic Vista, etc.).  These sacrifice a land to get a
+        # land, so the net land count does not increase — they are colour
+        # fixing, not ramp.
+        _self_sacrifice_land = (
+            self.is_land
+            and bool(re.search(r"sacrifice", self.oracle_text, re.IGNORECASE))
+        )
+        self.is_land_fetcher: bool = (
+            (bool(_etb_fetch) or _ramp_spell) and not _self_sacrifice_land
+        )
+
+        # Does the fetched land enter tapped?
+        self.fetched_land_tapped: bool = (
+            self.is_land_fetcher
+            and bool(re.search(r"battlefield tapped", self.oracle_text, re.IGNORECASE))
+        )
+
+        # How many lands does it fetch?  Default 1; some cards fetch 2.
+        self.lands_fetched: int = 0
+        if self.is_land_fetcher:
+            self.lands_fetched = 1
+            # Detect "two" or "up to two" land fetches
+            if re.search(rf"(?:two|2) .*{_LAND_WORD}.*battlefield", self.oracle_text, re.IGNORECASE):
+                self.lands_fetched = 2
+
     def mana_production(self) -> int:
         """
         Estimate how much mana this permanent produces when tapped, based on
         its oracle text.  Falls back to 1 if no "Add {X}..." pattern is found.
+
+        Handles common edge cases:
+        - "Add {B} or {R}" → choice of one, returns 1 (not 2).
+        - "Add {C}{C}" → additive, returns 2.
+        - Conditional abilities ("Activate only if …") → returns 0.
+        - Activation costs ("{N}, {T}: Add …") → net production is reduced.
         """
+        # Check for conditional activation restrictions
+        if re.search(r"activate only if", self.oracle_text, re.IGNORECASE):
+            return 0
+
         add_match = re.search(r"Add (.+?)\.", self.oracle_text, re.IGNORECASE)
         if add_match:
-            symbols = re.findall(r"\{[WUBRGCwubrgc\d/]+\}", add_match.group(1))
+            add_text = add_match.group(1)
+
+            # "Add {X} or {Y}" is a choice — pick the best alternative
+            if " or " in add_text:
+                alternatives = add_text.split(" or ")
+                best = 0
+                for alt in alternatives:
+                    syms = re.findall(r"\{[WUBRGCwubrgc\d/]+\}", alt)
+                    best = max(best, len(syms))
+                return best if best > 0 else 1
+
+            symbols = re.findall(r"\{[WUBRGCwubrgc\d/]+\}", add_text)
             if symbols:
-                return len(symbols)
-        # Default: produce 1 mana (correct for most basic lands and signet-like rocks)
+                total = len(symbols)
+
+                # Subtract generic activation costs ("{N}, {T}: Add …")
+                cost_match = re.search(
+                    r"\{(\d+)\}[^.]*?(?:,\s*\{T\}|\{T\}\s*,)[^.]*?Add",
+                    self.oracle_text, re.IGNORECASE,
+                )
+                if cost_match:
+                    total -= int(cost_match.group(1))
+
+                return max(total, 0)
+
+        # Default: produce 1 mana (correct for most basic lands / signet-like rocks)
         return 1
 
     def __repr__(self) -> str:
@@ -148,14 +239,18 @@ def _fetch_from_scryfall(name: str) -> Optional[Dict]:
 
         # Double-faced cards: use front face for type/cost, card-level for cmc
         if data.get("layout") in ("transform", "modal_dfc", "reversible_card"):
-            face = data.get("card_faces", [{}])[0]
+            faces = data.get("card_faces", [{}])
+            face = faces[0]
+            back = faces[1] if len(faces) > 1 else {}
             return {
                 "name": data.get("name", name),
                 "type_line": face.get("type_line", data.get("type_line", "")),
+                "back_type_line": back.get("type_line", ""),
                 "mana_cost": face.get("mana_cost", data.get("mana_cost", "")),
                 "cmc": data.get("cmc", 0),
                 "produced_mana": data.get("produced_mana", []),
                 "oracle_text": face.get("oracle_text", data.get("oracle_text", "")),
+                "back_oracle_text": back.get("oracle_text", ""),
             }
 
         return {
@@ -193,7 +288,7 @@ def get_card(name: str, cache: Dict) -> Card:
 # ---------------------------------------------------------------------------
 
 # Sections whose cards should be excluded from the library
-_EXCLUDED_SECTIONS = {"maybeboard", "tokens & extras", "tokens"}
+_EXCLUDED_SECTIONS = {"maybeboard", "tokens & extras"}
 
 
 def parse_decklist(filepath: str) -> Tuple[str, List[str]]:
@@ -361,7 +456,9 @@ class GameState:
           3. Play a land if one is in hand (adds its production to the pool).
           4. Play mana rocks / mana dorks cheapest-first, spending mana for
              each cost and adding the card's production back to the pool.
-          5. Check whether the commander can be cast from the remaining pool.
+          5. Play land-fetcher spells / creatures if affordable. Each adds a
+             virtual land to play (tapped or untapped per the card's text).
+          6. Check whether the commander can be cast from the remaining pool.
 
         The local *mana_pool* variable accurately tracks mana available at
         every point in the turn (spent mana is subtracted, gained mana is
@@ -406,7 +503,39 @@ class GameState:
                     changed = True
                     break  # restart to re-sort candidates
 
-        # 5. Can we cast the commander?
+        # 5. Play land-fetcher spells / creatures (cheapest first)
+        #    Each one costs mana but puts a land into play from the library.
+        changed = True
+        while changed:
+            changed = False
+            fetchers = [
+                c for c in self.hand
+                if c.is_land_fetcher and c.cmc <= mana_pool
+            ]
+            if not fetchers:
+                break
+            fetchers.sort(key=lambda c: c.cmc)
+            for fetcher in fetchers:
+                if fetcher.cmc <= mana_pool:
+                    mana_pool -= fetcher.cmc
+                    self.hand.remove(fetcher)
+                    # The fetched land produces mana this turn only if untapped
+                    for _ in range(fetcher.lands_fetched):
+                        if not fetcher.fetched_land_tapped:
+                            mana_pool += 1  # untapped basic land
+                        # Either way, add a virtual land to permanents for
+                        # future turns (always produces 1)
+                        from types import SimpleNamespace
+                        virtual_land = SimpleNamespace(
+                            mana_production=lambda: 1,
+                            name="Fetched Land",
+                            is_land=True,
+                        )
+                        self.lands_in_play.append(virtual_land)  # type: ignore
+                    changed = True
+                    break
+
+        # 6. Can we cast the commander?
         if mana_pool >= self._commander_cost():
             self.commander_casts += 1
             return True
@@ -545,6 +674,7 @@ def generate_report_image(
     num_lands: int,
     num_rocks: int,
     num_dorks: int,
+    num_fetchers: int,
     output_path: str,
 ) -> None:
     """
@@ -669,6 +799,7 @@ def generate_report_image(
         ("Lands", str(num_lands)),
         ("Mana rocks", str(num_rocks)),
         ("Mana dorks", str(num_dorks)),
+        ("Land fetchers", str(num_fetchers)),
         ("", ""),
         ("Simulations", f"{total:,}"),
         ("Average turn", f"{mean:.2f}"),
@@ -763,10 +894,12 @@ def main() -> None:
     lands = [c for c in deck if c.is_land]
     rocks = [c for c in deck if c.is_mana_rock]
     dorks = [c for c in deck if c.is_mana_dork]
+    fetchers = [c for c in deck if c.is_land_fetcher]
     print(f"  Commander CMC : {commander.cmc}", file=sys.stderr)
     print(f"  Lands         : {len(lands)}", file=sys.stderr)
     print(f"  Mana rocks    : {len(rocks)}", file=sys.stderr)
     print(f"  Mana dorks    : {len(dorks)}", file=sys.stderr)
+    print(f"  Land fetchers : {len(fetchers)}", file=sys.stderr)
 
     # --- Simulate ---
     print(f"\nRunning {NUM_SIMULATIONS:,} simulations …", file=sys.stderr)
@@ -793,6 +926,7 @@ def main() -> None:
         num_lands=len(lands),
         num_rocks=len(rocks),
         num_dorks=len(dorks),
+        num_fetchers=len(fetchers),
         output_path=output_file,
     )
 
