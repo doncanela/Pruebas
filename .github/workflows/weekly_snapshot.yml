@@ -1,0 +1,43 @@
+name: MTG Weekly Price Snapshot
+
+# Runs every Sunday at 10:00 UTC (no PC needed — GitHub servers do it)
+on:
+  schedule:
+    - cron: "0 10 * * 0"   # Sunday 10:00 UTC
+  workflow_dispatch:        # Also allow manual trigger from GitHub UI
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: CardPricePredictor
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests pandas numpy scikit-learn xgboost joblib tqdm matplotlib "psycopg[binary]"
+
+      - name: Run weekly snapshot
+        env:
+          DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: python weekly_snapshot.py
+
+      - name: Upload log as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-log-${{ github.run_number }}
+          path: CardPricePredictor/logs/weekly_snapshot.log
+          retention-days: 90

@@ -1,0 +1,124 @@
+Commander
+1 Maralen, Fae Ascendant
+
+Boardwipes
+1 Cyclonic Rift
+1 Kindred Dominance
+1 Raise the Palisade
+
+Counter
+1 An Offer You Can't Refuse
+1 Counterspell
+1 Glen Elendra's Answer
+1 Swan Song
+
+Draw
+1 Beast Whisperer
+1 Chronicle of Victory
+1 Edric, Spymaster of Trest
+1 Faerie Mastermind
+1 Guardian Project
+1 Kindred Discovery
+1 Realmwalker
+1 Reconnaissance Mission
+1 Skullclamp
+1 Talion, the Kindly Lord
+1 Voracious Tome-Skimmer
+
+Land
+1 Alchemist's Refuge
+1 Bloodstained Mire
+1 Bojuka Bog
+1 Breeding Pool
+1 Command Tower
+1 Drowned Catacomb
+1 Eclipsed Realms
+1 Exotic Orchard
+1 Flooded Grove
+1 Flooded Strand
+3 Forest
+1 Gilt-Leaf Palace
+1 Hinterland Harbor
+4 Island
+1 Llanowar Wastes
+1 Overgrown Tomb
+1 Path of Ancestry
+1 Polluted Delta
+1 Rejuvenating Springs
+1 Secluded Glen
+4 Swamp
+1 Twilight Mire
+1 Undergrowth Stadium
+1 Watery Grave
+1 Woodland Cemetery
+1 Yavimaya Coast
+1 Zagoth Triome
+
+Protection
+1 Heroic Intervention
+1 Imp's Mischief
+1 Lightning Greaves
+1 Swiftfoot Boots
+
+Ramp
+1 Arcane Signet
+1 Bender's Waterskin
+1 Deathrite Shaman
+1 Elves of Deep Shadow
+1 Farseek
+1 Kodama's Reach
+1 Maraleaf Pixie
+1 Nature's Lore
+1 Rampant Growth
+1 Sol Ring
+1 Urborg Elf
+1 Wood Elves
+
+Removal
+1 Assassin's Trophy
+1 Beast Within
+1 Chomping Changeling
+1 Pongify
+1 Putrefy
+1 Rapid Hybridization
+1 Reality Shift
+1 Stolen by the Fae
+
+Synergies
+1 Coat of Arms
+1 Leyline of Anticipation
+1 Reflections of Littjara
+
+Tribal in other's turn
+1 Alela, Cunning Conqueror
+1 Bitterbloom Bearer
+1 Brazen Borrower // Petty Theft
+1 Faebloom Trick
+1 Faerie Harbinger
+1 Faerie Vandal
+1 High Fae Trickster
+1 Obyra, Dreaming Duelist
+1 Oona, Queen of the Fae
+1 Scion of Oona
+1 Scryb Ranger
+1 Seedborn Muse
+1 Spellstutter Sprite
+
+Tribal own turn
+1 Bitterblossom
+1 Cloud of Faeries
+1 Flitterwing Nuisance
+1 High Perfect Morcant
+1 Lathril, Blade of the Elves
+1 Notorious Throng
+
+Maybeboard
+1 Archmage of Echoes
+1 Bident of Thassa
+1 Bloom Tender
+1 Door of Destinies
+1 Galadhrim Ambush
+1 Glamer Gifter
+1 Glen Elendra Archmage
+1 Leyline of Transformation
+1 Selfless Safewright
