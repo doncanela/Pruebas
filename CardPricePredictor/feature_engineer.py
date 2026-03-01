@@ -22,6 +22,7 @@ Every card is turned into a numeric row with the following feature groups:
 17. Reprint risk       : Reserved List, reprint frequency, vulnerability
 18. Ban / restrict     : per-format ban flags, ban ratio
 19. Seasonality        : release month/quarter, recency, rotation proximity
+20. Metagame demand    : actual tournament usage % from MTGGoldfish per format
 
 Target variable: Cardmarket EUR price  (prices.eur from Scryfall).
 """
@@ -40,6 +41,9 @@ import config
 
 def build_feature_dataframe(cards: list[dict]) -> pd.DataFrame:
     """Convert a list of Scryfall card dicts into a feature DataFrame."""
+    # Ensure metagame data is merged into cards (even if loaded from cache)
+    cards = _ensure_metagame_enriched(cards)
+
     total = len(cards)
     rows = []
     for i, c in enumerate(cards):
@@ -78,6 +82,53 @@ def build_feature_dataframe(cards: list[dict]) -> pd.DataFrame:
 def get_feature_columns(df: pd.DataFrame) -> list[str]:
     """Return the list of feature column names (everything except the target)."""
     return [c for c in df.columns if c != "price_eur"]
+
+
+# ─── Metagame enrichment ─────────────────────────────────────────────────────
+
+def _ensure_metagame_enriched(cards: list[dict]) -> list[dict]:
+    """
+    If cards don't already have metagame data, merge it from MTGGoldfish cache.
+    This ensures cached raw_cards.json still gets metagame features.
+    """
+    # Quick check: does the first card with a name have meta fields?
+    sample = next((c for c in cards if c.get("name")), None)
+    if sample and "meta_formats_played" in sample:
+        return cards  # already enriched
+
+    try:
+        from metagame_collector import fetch_metagame_data, _normalize_name
+    except ImportError:
+        print("  ⚠ metagame_collector not available, skipping metagame enrichment.")
+        return cards
+
+    print("Enriching cards with MTGGoldfish metagame data …")
+    metagame = fetch_metagame_data()
+
+    matched = 0
+    for card in cards:
+        card_name = card.get("name", "")
+        norm_name = _normalize_name(card_name)
+        meta_info = metagame.get(norm_name, {})
+
+        for fmt in ["standard", "pioneer", "modern", "legacy", "vintage"]:
+            fmt_data = meta_info.get(fmt, {})
+            card[f"meta_{fmt}_pct"] = fmt_data.get("pct", 0.0)
+            card[f"meta_{fmt}_copies"] = fmt_data.get("copies", 0.0)
+
+        card["meta_formats_played"] = len(meta_info)
+        all_pcts = [v["pct"] for v in meta_info.values()] if meta_info else []
+        card["meta_max_usage"] = max(all_pcts) if all_pcts else 0.0
+        card["meta_avg_usage"] = (
+            sum(all_pcts) / len(all_pcts) if all_pcts else 0.0
+        )
+        card["meta_total_usage"] = sum(all_pcts)
+
+        if meta_info:
+            matched += 1
+
+    print(f"  Metagame matched: {matched:,} card printings to tournament data.")
+    return cards
 
 
 # ─── Row builder ─────────────────────────────────────────────────────────────
@@ -619,6 +670,51 @@ def _card_to_row(card: dict) -> dict:
     # Cross-section interaction: seasonality × demand
     row["recency_x_rarity"] = row["hype_decay"] * rn
     row["recency_x_competitive"] = row["hype_decay"] * competitive_legal
+
+    # ── 20. Metagame demand (MTGGoldfish tournament data) ───────
+    # Per-format usage percentage (0–100; 0 = not in top-50 staples)
+    for fmt in ["standard", "pioneer", "modern", "legacy", "vintage"]:
+        row[f"meta_{fmt}_pct"] = card.get(f"meta_{fmt}_pct", 0.0)
+        row[f"meta_{fmt}_copies"] = card.get(f"meta_{fmt}_copies", 0.0)
+
+    # Aggregate metagame signals
+    row["meta_formats_played"] = card.get("meta_formats_played", 0)
+    row["meta_max_usage"] = card.get("meta_max_usage", 0.0)
+    row["meta_avg_usage"] = card.get("meta_avg_usage", 0.0)
+    row["meta_total_usage"] = card.get("meta_total_usage", 0.0)
+
+    # Metagame tier flags
+    row["is_meta_staple"] = int(row["meta_max_usage"] >= 20.0)
+    row["is_meta_allstar"] = int(row["meta_max_usage"] >= 40.0)
+    row["is_multi_format_meta"] = int(row["meta_formats_played"] >= 2)
+    row["is_cross_format_staple"] = int(
+        row["meta_formats_played"] >= 3 and row["meta_avg_usage"] >= 15.0
+    )
+
+    # Competitive demand score: weighted sum across formats
+    # (Modern/Pioneer have more players → higher weight than Vintage)
+    row["competitive_demand_score"] = (
+        row["meta_standard_pct"] * 1.0
+        + row["meta_pioneer_pct"] * 1.2
+        + row["meta_modern_pct"] * 1.5
+        + row["meta_legacy_pct"] * 0.8
+        + row["meta_vintage_pct"] * 0.5
+    )
+
+    # Metagame × rarity interaction (meta-played rares/mythics = premium)
+    row["meta_x_rarity"] = row["meta_max_usage"] * rn
+    row["meta_x_scarcity"] = row["meta_max_usage"] * row.get("supply_scarcity", 1.0)
+    row["meta_x_commander"] = (
+        row["meta_formats_played"] * row["is_commander_legal"]
+    )
+
+    # Specific format demand profiles
+    row["modern_pioneer_demand"] = (
+        row["meta_modern_pct"] + row["meta_pioneer_pct"]
+    )
+    row["eternal_format_demand"] = (
+        row["meta_legacy_pct"] + row["meta_vintage_pct"]
+    )
 
     return row
 

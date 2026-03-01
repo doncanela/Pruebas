@@ -211,6 +211,29 @@ def _enrich_single_card(card: dict) -> dict:
 
     card["set_card_count"] = 0  # not critical for single-card inference
 
+    # Metagame enrichment: look up tournament usage from MTGGoldfish cache
+    try:
+        from metagame_collector import fetch_metagame_data, get_card_metagame
+        metagame = fetch_metagame_data()  # uses cache if fresh
+        card_name = card.get("name", "")
+        meta_info = get_card_metagame(card_name, metagame)
+
+        for fmt in ["standard", "pioneer", "modern", "legacy", "vintage"]:
+            fmt_data = meta_info.get(fmt, {})
+            card[f"meta_{fmt}_pct"] = fmt_data.get("pct", 0.0)
+            card[f"meta_{fmt}_copies"] = fmt_data.get("copies", 0.0)
+
+        card["meta_formats_played"] = len(meta_info)
+        all_pcts = [v["pct"] for v in meta_info.values()] if meta_info else []
+        card["meta_max_usage"] = max(all_pcts) if all_pcts else 0.0
+        card["meta_avg_usage"] = (
+            sum(all_pcts) / len(all_pcts) if all_pcts else 0.0
+        )
+        card["meta_total_usage"] = sum(all_pcts)
+    except Exception:
+        # Metagame data not available; features will default to 0
+        pass
+
     return card
 
 

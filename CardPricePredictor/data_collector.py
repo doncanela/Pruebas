@@ -176,6 +176,7 @@ def download_bulk(force: bool = False) -> list[dict]:
     print(f"       Kept {len(cards):,} cards with Cardmarket price.\n")
 
     cards = _enrich_reprint_info(cards)
+    cards = _enrich_metagame_info(cards)
     _save_cache(cards)
     return cards
 
@@ -214,6 +215,7 @@ def download_sets(
 
     print(f"\nTotal cards collected: {len(all_cards):,}")
     all_cards = _enrich_reprint_info(all_cards)
+    all_cards = _enrich_metagame_info(all_cards)
     _save_cache(all_cards)
     return all_cards
 
@@ -259,6 +261,50 @@ def _download_set(set_code: str) -> list[dict]:
         url = data.get("next_page")
         params = None  # next_page already has params
 
+    return cards
+
+
+# ─── Metagame enrichment ─────────────────────────────────────────────────────
+
+def _enrich_metagame_info(cards: list[dict]) -> list[dict]:
+    """
+    Merge MTGGoldfish competitive metagame data into each card dict.
+    Adds per-format usage percentages and aggregate metagame signals.
+    """
+    try:
+        from metagame_collector import fetch_metagame_data, _normalize_name
+    except ImportError:
+        print("  ⚠ metagame_collector not available, skipping metagame enrichment.")
+        return cards
+
+    print("\nFetching metagame data from MTGGoldfish …")
+    metagame = fetch_metagame_data()
+
+    matched = 0
+    for card in cards:
+        card_name = card.get("name", "")
+        norm_name = _normalize_name(card_name)
+        meta_info = metagame.get(norm_name, {})
+
+        # Per-format usage: 0.0 if not in the top-50 for that format
+        for fmt in ["standard", "pioneer", "modern", "legacy", "vintage"]:
+            fmt_data = meta_info.get(fmt, {})
+            card[f"meta_{fmt}_pct"] = fmt_data.get("pct", 0.0)
+            card[f"meta_{fmt}_copies"] = fmt_data.get("copies", 0.0)
+
+        # Aggregate signals
+        card["meta_formats_played"] = len(meta_info)
+        all_pcts = [v["pct"] for v in meta_info.values()] if meta_info else []
+        card["meta_max_usage"] = max(all_pcts) if all_pcts else 0.0
+        card["meta_avg_usage"] = (
+            sum(all_pcts) / len(all_pcts) if all_pcts else 0.0
+        )
+        card["meta_total_usage"] = sum(all_pcts)
+
+        if meta_info:
+            matched += 1
+
+    print(f"  Metagame: matched {matched:,} card printings to tournament data.")
     return cards
 
 

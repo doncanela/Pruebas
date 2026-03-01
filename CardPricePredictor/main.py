@@ -256,6 +256,47 @@ def cmd_info(args):
     except Exception as e:
         print(f"  Neon DB   : not available ({e})")
 
+    # Metagame cache
+    if os.path.exists(config.METAGAME_CACHE_PATH):
+        with open(config.METAGAME_CACHE_PATH, "r", encoding="utf-8") as f:
+            meta_cache = json.load(f)
+        n_cards = len(meta_cache.get("data", {}))
+        fetched = meta_cache.get("fetched_at", "unknown")
+        print(f"  Metagame  : {n_cards} cards (fetched {fetched})")
+    else:
+        print("  Metagame  : not fetched yet (run 'metagame' command)")
+
+
+def cmd_metagame(args):
+    """Fetch or display metagame data from MTGGoldfish."""
+    from metagame_collector import fetch_metagame_data, get_card_metagame
+    from metagame_collector import METAGAME_FORMATS
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — Metagame Data (MTGGoldfish)")
+    print("=" * 60)
+
+    data = fetch_metagame_data(force=args.force)
+
+    if args.card:
+        card_data = get_card_metagame(args.card, data)
+        if card_data:
+            print(f"\nMetagame data for '{args.card}':")
+            for fmt, info in sorted(card_data.items()):
+                print(f"  {fmt:>10s}: {info['pct']:5.1f}% of decks, "
+                      f"{info['copies']:.1f} avg copies")
+        else:
+            print(f"\n'{args.card}' not in the top-50 staples of any format.")
+    else:
+        print(f"\n{len(data):,} unique cards with tournament usage data:")
+        for fmt in METAGAME_FORMATS:
+            cards_in_fmt = {k: v[fmt] for k, v in data.items() if fmt in v}
+            top = sorted(cards_in_fmt.items(),
+                         key=lambda x: x[1]["pct"], reverse=True)[:5]
+            print(f"\n  {fmt.upper()} (top 5):")
+            for name, info in top:
+                print(f"    {name:<35s} {info['pct']:5.1f}%  ({info['copies']:.1f} copies)")
+
 
 # ─── Argument parser ─────────────────────────────────────────────────────────
 
@@ -349,6 +390,21 @@ def main():
         help="Sync local card data to Neon DB (cards + snapshot)",
     )
     p_syncdb.set_defaults(func=cmd_sync_db)
+
+    # ── metagame ──
+    p_meta = sub.add_parser(
+        "metagame",
+        help="Fetch/refresh metagame data from MTGGoldfish",
+    )
+    p_meta.add_argument(
+        "--force", action="store_true",
+        help="Ignore cache, re-fetch from MTGGoldfish.",
+    )
+    p_meta.add_argument(
+        "--card", type=str, default=None,
+        help="Look up metagame data for a specific card.",
+    )
+    p_meta.set_defaults(func=cmd_metagame)
 
     args = parser.parse_args()
     args.func(args)
