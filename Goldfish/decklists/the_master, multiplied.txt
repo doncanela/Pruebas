@@ -1,0 +1,121 @@
+Commander
+1 The Master, Multiplied
+
+Anthem
+1 Enduring Courage
+1 Rising of the Day
+1 Tuktuk Rubblefort
+
+Burn
+1 Agate Instigator
+1 Molten Gatekeeper
+
+Copy
+1 Calamity, Galloping Inferno
+1 Delina, Wild Mage
+1 Flamerush Rider
+1 Flameshadow Conjuring
+1 Hate Mirage
+1 Heat Shimmer
+1 Helm of the Host
+1 Jaxis, the Troublemaker
+1 Kiki-Jiki, Mirror Breaker
+1 Lithoform Engine
+1 Mirage Mirror
+1 Mirage Phalanx
+1 Mirror Box
+1 Mirror March
+1 Molten Duplication
+1 Molten Echoes
+1 Orthion, Hero of Lavabrink
+1 Rionya, Fire Dancer
+1 Twinflame
+
+Discard
+1 Banshee of the Dread Choir
+
+Draw
+1 Black Market Connections
+1 Phyrexian Arena
+
+Finisher
+1 Combat Celebrant
+1 Éomer, Marshal of Rohan
+1 Port Razer
+
+Land
+1 Bloodfell Caves
+1 Bloodsoaked Insight // Sanguine Morass
+1 Canyon Slough
+1 Command Tower
+1 Dragonskull Summit
+1 Exotic Orchard
+1 Fell the Profane // Fell Mire
+1 Foreboding Ruins
+1 Geothermal Bog
+1 Lavaclaw Reaches
+1 Mount Doom
+8 Mountain
+1 Pinnacle Monk // Mystic Peak
+1 Restless Vents
+1 Rogue's Passage
+1 Shadowblood Ridge
+1 Smoldering Marsh
+1 Sundering Eruption // Volcanic Fissure
+8 Swamp
+1 Temple of Malice
+1 Temple of the False God
+
+Protection
+1 Lightning Greaves
+1 Swiftfoot Boots
+
+Ramp
+1 Arcane Signet
+1 Commander's Sphere
+1 Cursed Mirror
+1 Goldlust Triad
+1 Sneak Attack
+1 Sol Ring
+1 Solemn Simulacrum
+1 Strixhaven Stadium
+1 Talisman of Indulgence
+
+Recursion
+1 Feldon of the Third Path
+1 Mimic Vat
+
+Removal
+1 Bedevil
+1 Blasphemous Act
+1 Chaos Warp
+1 Come Back Wrong
+1 Dalek Drone
+1 Deadpool, Trading Card
+1 Dreadbore
+1 Ravenous Chupacabra
+1 Saw in Half
+1 Terminate
+
+Sorcery
+1 Electroduplicate
+
+Theft
+1 Firbolg Flutist
+
+Tokens
+1 Blade of Selves
+1 Dalek Squadron
+1 Determined Iteration
+1 Elturel Survivors
+1 Genasi Enforcers
+1 Gnoll War Band
+1 Redoubled Stormsinger
+1 Tiamat's Fanatics
+1 Warchief Giant
+
+Tokens & Extras
+3 Copy
+1 Deadpool, Trading Card
+1 The Master, Multiplied
+1 Treasure
