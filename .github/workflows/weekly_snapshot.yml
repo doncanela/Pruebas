@@ -5,11 +5,20 @@ on:
   schedule:
     - cron: "0 10 * * 0"   # Sunday 10:00 UTC
   workflow_dispatch:        # Also allow manual trigger from GitHub UI
+    inputs:
+      retrain:
+        description: "Also retrain the model?"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     defaults:
       run:
@@ -27,12 +36,40 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install requests pandas numpy scikit-learn xgboost joblib tqdm matplotlib "psycopg[binary]"
+          pip install requests pandas numpy scikit-learn xgboost joblib tqdm matplotlib "psycopg[binary]" beautifulsoup4 lxml
+
+      # Decide whether to retrain: manual input, or auto-retrain on the 1st Sunday of each month
+      - name: Check if retrain needed
+        id: retrain_check
+        run: |
+          if [ "${{ github.event.inputs.retrain }}" = "true" ]; then
+            echo "retrain=true" >> $GITHUB_OUTPUT
+          elif [ "$(date +%d)" -le 7 ]; then
+            echo "retrain=true" >> $GITHUB_OUTPUT
+            echo "Auto-retrain: first Sunday of the month"
+          else
+            echo "retrain=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Run weekly snapshot
         env:
           DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
-        run: python weekly_snapshot.py
+        run: |
+          if [ "${{ steps.retrain_check.outputs.retrain }}" = "true" ]; then
+            python weekly_snapshot.py --retrain
+          else
+            python weekly_snapshot.py
+          fi
+
+      - name: Commit updated model artifacts
+        if: steps.retrain_check.outputs.retrain == 'true'
+        run: |
+          cd ..
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f CardPricePredictor/models/ CardPricePredictor/data/metagame_cache.json || true
+          git diff --cached --quiet || git commit -m "chore: auto-retrain model $(date +%Y-%m-%d)"
+          git push || echo "Nothing to push"
 
       - name: Upload log as artifact
         if: always()

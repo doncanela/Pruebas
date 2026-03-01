@@ -1,19 +1,21 @@
 """
-weekly_snapshot.py — Automated weekly price snapshot.
+weekly_snapshot.py — Automated weekly pipeline.
 
-This script is meant to be called by Windows Task Scheduler (or cron).
-It:
-  1. Downloads fresh bulk card data from Scryfall
-  2. Takes a price snapshot (local CSV + Neon DB)
-  3. Syncs card metadata to Neon DB
-  4. Logs everything to a rotating log file
+This script is meant to be called by Windows Task Scheduler, GitHub Actions,
+or cron.  It:
+  1. Downloads fresh bulk card data from Scryfall  (prices + EDHREC ranks)
+  2. Refreshes MTGGoldfish metagame staples        (5 competitive formats)
+  3. Takes a price snapshot                        (local CSV + Neon DB)
+  4. Syncs card metadata to Neon DB
+  5. Retrains the model on the newest data          (optional, --retrain flag)
 
 Exit codes:
   0 = success
-  1 = partial failure (snapshot taken but DB sync failed)
-  2 = fatal error
+  1 = partial failure (non-critical step failed)
+  2 = fatal error (bulk download failed)
 """
 
+import argparse
 import json
 import logging
 import os
@@ -46,14 +48,16 @@ console.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M
 logger.addHandler(console)
 
 
-def run():
+def run(retrain: bool = False):
     exit_code = 0
+    total_steps = 5 if retrain else 4
     start = datetime.now()
     logger.info("=" * 50)
-    logger.info("Weekly snapshot started")
+    logger.info(f"Weekly snapshot started (retrain={'yes' if retrain else 'no'})")
 
-    # 1. Download fresh bulk data
-    logger.info("Step 1/3: Downloading bulk card data from Scryfall…")
+    # ── 1. Download fresh bulk data (Scryfall → Cardmarket EUR prices + EDHREC)
+    step = 1
+    logger.info(f"Step {step}/{total_steps}: Downloading bulk card data from Scryfall…")
     try:
         from data_collector import download_bulk
         cards = download_bulk(force=True)
@@ -62,18 +66,33 @@ def run():
         logger.error(f"  FATAL: Bulk download failed: {e}")
         return 2
 
-    # 2. Take price snapshot (local CSV + Neon DB)
-    logger.info("Step 2/3: Taking price snapshot…")
+    # ── 2. Refresh MTGGoldfish metagame data
+    step = 2
+    logger.info(f"Step {step}/{total_steps}: Refreshing MTGGoldfish metagame staples…")
+    try:
+        from metagame_collector import fetch_metagame_data
+        meta = fetch_metagame_data(force=True)
+        logger.info(f"  Metagame refreshed: {len(meta):,} unique cards across 5 formats.")
+    except Exception as e:
+        logger.warning(f"  Metagame refresh failed (non-fatal): {e}")
+        if exit_code == 0:
+            exit_code = 1
+
+    # ── 3. Take price snapshot (local CSV + Neon DB)
+    step = 3
+    logger.info(f"Step {step}/{total_steps}: Taking price snapshot…")
     try:
         from price_history import take_snapshot
         n = take_snapshot(cards)
         logger.info(f"  Snapshot saved: {n:,} card prices.")
     except Exception as e:
         logger.error(f"  Snapshot failed: {e}")
-        exit_code = 1
+        if exit_code == 0:
+            exit_code = 1
 
-    # 3. Sync card metadata to Neon DB
-    logger.info("Step 3/3: Syncing card metadata to Neon DB…")
+    # ── 4. Sync card metadata to Neon DB
+    step = 4
+    logger.info(f"Step {step}/{total_steps}: Syncing card metadata to Neon DB…")
     try:
         from db import init_db, upsert_cards_batch
         init_db()
@@ -84,6 +103,20 @@ def run():
         if exit_code == 0:
             exit_code = 1
 
+    # ── 5. Retrain model (optional)
+    if retrain:
+        step = 5
+        logger.info(f"Step {step}/{total_steps}: Retraining model on fresh data…")
+        try:
+            from model import train as train_model
+            metrics = train_model(cards=cards)
+            logger.info(f"  Model retrained — R²={metrics.get('r2', '?'):.3f}, "
+                        f"MAE=€{metrics.get('mae', '?'):.2f}")
+        except Exception as e:
+            logger.error(f"  Model retraining failed: {e}")
+            if exit_code == 0:
+                exit_code = 1
+
     elapsed = (datetime.now() - start).total_seconds()
     logger.info(f"Weekly snapshot finished in {elapsed:.0f}s (exit code {exit_code})")
     logger.info("=" * 50)
@@ -91,4 +124,8 @@ def run():
 
 
 if __name__ == "__main__":
-    sys.exit(run())
+    parser = argparse.ArgumentParser(description="Weekly MTG data snapshot & optional retrain")
+    parser.add_argument("--retrain", action="store_true",
+                        help="Also retrain the model after refreshing data")
+    args = parser.parse_args()
+    sys.exit(run(retrain=args.retrain))
