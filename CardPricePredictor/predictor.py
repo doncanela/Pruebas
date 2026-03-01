@@ -128,6 +128,75 @@ def predict_batch(card_names: list[str], set_code: Optional[str] = None) -> list
     return results
 
 
+# ─── Lasso prediction ───────────────────────────────────────────────────────
+
+def predict_card_lasso(
+    card_name: Optional[str] = None,
+    card_dict: Optional[dict] = None,
+    set_code: Optional[str] = None,
+    verbose: bool = True,
+) -> dict:
+    """
+    Predict the Cardmarket EUR price using the Lasso model.
+    Same interface as predict_card but uses Lasso instead of XGBoost.
+    """
+    from model_lasso import load_lasso_model, load_lasso_reserved_list_model
+
+    # 1. Resolve card data
+    if card_dict is None:
+        if card_name is None:
+            raise ValueError("Provide either `card_name` or `card_dict`.")
+        card_dict = _fetch_card(card_name, set_code)
+
+    card_dict = _enrich_single_card(card_dict)
+
+    # 2. Feature-engineer
+    row = _card_to_row(card_dict)
+    row_df = pd.DataFrame([row])
+
+    # 3. Load Lasso model — use RL variant if the card is on the Reserved List
+    is_reserved = card_dict.get("reserved", False)
+    if is_reserved and os.path.exists(config.LASSO_RL_MODEL_PATH):
+        model, scaler, feature_cols = load_lasso_reserved_list_model()
+        model_used = "lasso_reserved_list"
+    else:
+        model, scaler, feature_cols = load_lasso_model()
+        model_used = "lasso_main"
+
+    # Ensure columns match training order
+    for col in feature_cols:
+        if col not in row_df.columns:
+            row_df[col] = 0
+    row_df = row_df[feature_cols]
+
+    # 4. Scale & predict
+    X = scaler.transform(row_df)
+    pred_log = model.predict(X)[0]
+    pred_price = float(np.expm1(pred_log))
+    pred_price = max(pred_price, 0.01)
+
+    current = card_dict.get("prices", {}).get(config.PRICE_FIELD)
+    current_price = float(current) if current else None
+
+    result = {
+        "card_name": card_dict.get("name", "Unknown"),
+        "set": card_dict.get("set_name", "Unknown"),
+        "set_code": card_dict.get("set", "???"),
+        "rarity": card_dict.get("rarity", "unknown"),
+        "predicted_price_eur": round(pred_price, 2),
+        "current_price_eur": round(current_price, 2) if current_price else None,
+        "mana_cost": card_dict.get("mana_cost", ""),
+        "type_line": card_dict.get("type_line", ""),
+        "model_used": model_used,
+    }
+
+    if verbose:
+        print(f"\n  [Lasso model: {model_used}]")
+        _print_prediction(result)
+
+    return result
+
+
 # ─── Scryfall fetch ──────────────────────────────────────────────────────────
 
 def _fetch_card(name: str, set_code: Optional[str] = None) -> dict:

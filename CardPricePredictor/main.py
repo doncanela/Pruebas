@@ -94,6 +94,57 @@ def cmd_train(args):
     train_reserved_list(df=df)
 
 
+def cmd_train_lasso(args):
+    """Feature-engineer and train the Lasso model."""
+    from model_lasso import train_lasso, train_lasso_reserved_list
+    import pandas as pd
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — Lasso Training")
+    print("=" * 60)
+
+    if os.path.exists(config.FEATURES_PATH) and not args.rebuild_features:
+        print(f"Loading pre-built features from {config.FEATURES_PATH}")
+        df = pd.read_csv(config.FEATURES_PATH)
+    elif os.path.exists(config.RAW_DATA_PATH):
+        print("Building features from raw card data …")
+        with open(config.RAW_DATA_PATH, "r", encoding="utf-8") as f:
+            cards = json.load(f)
+        from feature_engineer import build_feature_dataframe
+        df = build_feature_dataframe(cards)
+    else:
+        print("ERROR: No data found. Run 'collect' first.")
+        print(f"  Expected: {config.RAW_DATA_PATH}")
+        sys.exit(1)
+
+    # Train main Lasso model (excludes RL cards)
+    print("\n" + "─" * 60)
+    print("  STAGE 1: Lasso main model (non-Reserved List)")
+    print("─" * 60)
+    train_lasso(df=df)
+
+    # Train Lasso Reserved List specialist
+    print("\n" + "─" * 60)
+    print("  STAGE 2: Lasso Reserved List specialist model")
+    print("─" * 60)
+    train_lasso_reserved_list(df=df)
+
+
+def cmd_predict_lasso(args):
+    """Predict price for a single card using the Lasso model."""
+    from predictor import predict_card_lasso
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — Lasso Prediction")
+    print("=" * 60)
+
+    if not os.path.exists(config.LASSO_MODEL_PATH):
+        print("ERROR: No trained Lasso model found. Run 'train-lasso' first.")
+        sys.exit(1)
+
+    predict_card_lasso(card_name=args.name, set_code=args.set)
+
+
 def cmd_predict(args):
     """Predict price for a single card."""
     from predictor import predict_card
@@ -344,12 +395,26 @@ def main():
     p_collect.set_defaults(func=cmd_collect)
 
     # ── train ──
-    p_train = sub.add_parser("train", help="Build features & train the model")
+    p_train = sub.add_parser("train", help="Build features & train the XGBoost model")
     p_train.add_argument(
         "--rebuild-features", action="store_true",
         help="Force re-engineering features even if features.csv exists.",
     )
     p_train.set_defaults(func=cmd_train)
+
+    # ── train-lasso ──
+    p_train_lasso = sub.add_parser("train-lasso", help="Build features & train the Lasso model")
+    p_train_lasso.add_argument(
+        "--rebuild-features", action="store_true",
+        help="Force re-engineering features even if features.csv exists.",
+    )
+    p_train_lasso.set_defaults(func=cmd_train_lasso)
+
+    # ── predict-lasso ──
+    p_pred_lasso = sub.add_parser("predict-lasso", help="Predict a card's price using Lasso")
+    p_pred_lasso.add_argument("name", type=str, help="Card name (English)")
+    p_pred_lasso.add_argument("--set", type=str, default=None, help="3-letter set code")
+    p_pred_lasso.set_defaults(func=cmd_predict_lasso)
 
     # ── predict ──
     p_predict = sub.add_parser("predict", help="Predict a card's price")

@@ -25,6 +25,14 @@ RL_MODEL_PATH = os.path.join(MODEL_DIR, "reserved_list_model.joblib")
 RL_SCALER_PATH = os.path.join(MODEL_DIR, "reserved_list_scaler.joblib")
 RL_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "reserved_list_feature_columns.joblib")
 
+# Lasso regression model
+LASSO_MODEL_PATH = os.path.join(MODEL_DIR, "lasso_model.joblib")
+LASSO_SCALER_PATH = os.path.join(MODEL_DIR, "lasso_scaler.joblib")
+LASSO_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "lasso_feature_columns.joblib")
+LASSO_RL_MODEL_PATH = os.path.join(MODEL_DIR, "lasso_reserved_list_model.joblib")
+LASSO_RL_SCALER_PATH = os.path.join(MODEL_DIR, "lasso_reserved_list_scaler.joblib")
+LASSO_RL_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "lasso_reserved_list_feature_columns.joblib")
+
 # ─── Scryfall API ────────────────────────────────────────────────────────────
 SCRYFALL_BULK_URL = "https://api.scryfall.com/bulk-data"
 SCRYFALL_SEARCH_URL = "https://api.scryfall.com/cards/search"
@@ -131,6 +139,18 @@ RL_XGBOOST_PARAMS = {
     "random_state": 42,
     "early_stopping_rounds": 60,
     "objective": "reg:squarederror",
+}
+
+# ─── Lasso regression hyper-parameters ───────────────────────────────────────
+# LassoCV auto-tunes alpha via cross-validation. We set a search grid and
+# let sklearn pick the best regularisation strength.
+LASSO_PARAMS = {
+    "alphas": 100,           # number of alpha values to try in CV
+    "cv": 5,                 # cross-validation folds
+    "max_iter": 20_000,      # convergence iterations
+    "tol": 1e-4,
+    "random_state": 42,
+    "n_jobs": -1,            # use all cores for CV
 }
 
 # ─── Set types considered "premium" (higher expected prices) ─────────────────

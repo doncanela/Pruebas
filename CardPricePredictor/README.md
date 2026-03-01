@@ -1,14 +1,16 @@
 # MTG Card Price Predictor
 
-Predict **Cardmarket EUR Trend prices** of Magic: The Gathering cards using machine learning (XGBoost).
+Predict **Cardmarket EUR Trend prices** of Magic: The Gathering cards using machine learning (XGBoost + Lasso).
 
 This is a **cross-sectional price model**: it learns the relationship between card attributes and current market value across ~77,000 cards. For newly released cards it provides a useful price estimate based on how similar attributes are valued across the rest of the market.
 
 Data is sourced from the **Scryfall API** (Cardmarket prices + card metadata) and **MTGGoldfish** (competitive metagame tournament data).
 
-**Current model**: 279 features · R² 0.53 · MAE €1.13 · SMAPE 46% · temporal split · zero leakage · trained on 77,000+ cards
+**XGBoost model**: 279 features · R² 0.53 · MAE €1.13 · SMAPE 46% · temporal split · zero leakage · trained on 77,000+ cards
 
-**Two-model architecture**: Reserved List cards (869 cards, €0–€31K) are routed to a dedicated specialist model, while all other cards use the main model.
+**Lasso model**: 29/277 features selected · R² 0.23 · MAE €2.25 · SMAPE 106% · auto-tuned alpha via LassoCV · interpretable linear baseline
+
+**Two-model architecture**: Reserved List cards (869 cards, €0–€31K) are routed to a dedicated specialist model, while all other cards use the main model. Both XGBoost and Lasso maintain their own RL specialists.
 
 ---
 
@@ -90,6 +92,19 @@ This will:
 - Show top-25 feature importances
 - Save all models to `models/`
 
+### 3b. Train the Lasso model (alternative)
+
+```bash
+python main.py train-lasso
+python main.py train-lasso --rebuild-features
+```
+
+This trains a **LassoCV** (L1-regularised linear regression) as a simpler, interpretable baseline:
+- Automatically selects the best regularisation alpha via 5-fold cross-validation
+- Performs built-in feature selection (drives irrelevant coefficients to zero)
+- Trains both a main model (non-RL) and a Reserved List specialist
+- Same temporal split, sample weights, and evaluation as the XGBoost pipeline
+
 ### 4. Predict a card's price
 
 ```bash
@@ -104,6 +119,10 @@ python main.py batch "Ragavan, Nimble Pilferer" "The One Ring" "Orcish Bowmaster
 
 # Save batch results to JSON
 python main.py batch "Force of Will" "Mana Crypt" -o results.json
+
+# Predict using the Lasso model instead of XGBoost
+python main.py predict-lasso "Sheoldred, the Apocalypse"
+python main.py predict-lasso "Lightning Bolt" --set lea
 ```
 
 ### 5. Metagame data
@@ -166,12 +185,13 @@ python main.py info
 
 ```
 CardPricePredictor/
-├── main.py                # CLI entry point (12 commands)
+├── main.py                # CLI entry point (14 commands)
 ├── config.py              # Paths, API URLs, hyperparameters, constants
 ├── data_collector.py      # Scryfall API data fetching + reprint/metagame enrichment
 ├── feature_engineer.py    # Raw JSON → 279 numeric features (leakage-free)
 ├── model.py               # XGBoost training & evaluation (main + Reserved List models)
-├── predictor.py           # Single-card inference (auto-routes RL cards to specialist)
+├── model_lasso.py         # Lasso (L1) training & evaluation (main + Reserved List)
+├── predictor.py           # Single-card inference (XGBoost + Lasso, auto-routes RL)
 ├── metagame_collector.py  # MTGGoldfish scraper (Standard/Pioneer/Modern/Legacy/Vintage)
 ├── price_history.py       # Prediction logging + price snapshots (local + DB)
 ├── db.py                  # Neon PostgreSQL integration (cards, predictions, snapshots)
@@ -200,8 +220,9 @@ CardPricePredictor/
 4. **Feature engineering**: Each card is converted to 277 numeric features across 20 groups — from basic stats to metagame demand, supply scarcity, Reserved List status, ban impact, and seasonality signals. All features are audited for intra-snapshot leakage (no foil prices, no time-since-release). See the Temporal Caveats section for inter-snapshot considerations (EDHREC, metagame, reprint prices).
 
 5. **Model (two-model architecture)**:
-   - **Main model**: An XGBoost regressor trained on ~76,000 non-Reserved-List cards with log-transformed prices, PseudoHuber loss, sample weights, temporal split, and a two-stage expensive-card specialist (≥€20) blended 60/40.
-   - **Reserved List model**: A dedicated XGBoost regressor trained on ~869 RL cards with squared-error loss, no outlier cap (prices span €0.02–€31,000), stronger regularisation (depth 5, reg_alpha 3, reg_lambda 8), and heavier weighting on expensive cards. At inference, cards are automatically routed to the correct model based on the `reserved` flag.
+   - **Main model (XGBoost)**: Trained on ~76,000 non-Reserved-List cards with log-transformed prices, PseudoHuber loss, sample weights, temporal split, and a two-stage expensive-card specialist (≥€20) blended 60/40.
+   - **Reserved List model (XGBoost)**: A dedicated XGBoost regressor trained on ~869 RL cards with squared-error loss, no outlier cap (prices span €0.02–€31,000), stronger regularisation, and heavier weighting on expensive cards.
+   - **Lasso alternative**: A LassoCV linear model (L1 regularisation) trained with the same pipeline. Auto-tunes alpha, selects ~29 features from 277, and provides an interpretable baseline. At inference, cards are automatically routed to the correct model based on the `reserved` flag.
 
 6. **Inference**: Given a card name, we fetch its data from Scryfall, enrich with reprint info and metagame data, engineer the same 277 features, and run the model. The prediction is automatically logged to both a local JSONL file and the Neon PostgreSQL database.
 
@@ -299,6 +320,35 @@ RL cards span €0.02–€30,975 and behave very differently from standard card
 > **Why R² is negative**: With only 869 samples spanning 5 orders of magnitude and a strict temporal split, the model's squared-error predictions are worse than predicting the mean for the test fold. However, the model correctly captures pricing structure for high-value staples (e.g. Black Lotus predicted ~€17K vs old main model's €287). The negative R² reflects the extreme difficulty of the problem, not uselessness.
 
 **Top features**: `meta_legacy_unknown`, `is_expansion_set`, `century_plus_reprints`, `meta_vintage_unknown`, `edhrec_rank`
+
+### Lasso model (linear baseline, ~76,258 non-RL cards)
+
+LassoCV automatically selects the best L1 regularisation strength and drives irrelevant coefficients to zero. This produces a simpler, more interpretable model at the cost of accuracy.
+
+| Metric | XGBoost | Lasso |
+|---|---|---|
+| **MAE** | €1.13 | €2.25 |
+| **MedAE** | €0.14 | €0.91 |
+| **RMSE** | €4.63 | €6.00 |
+| **R²** | 0.53 | 0.23 |
+| **SMAPE** | 46% | 106% |
+| **Features used** | 277 | 29 (10.5%) |
+| **Bracket accuracy** | 71.1% | 26.2% |
+
+**Top Lasso features** (by absolute coefficient): `edhrec_rank` (−), `set_era` (−), `edhrec_top_1000` (+), `rarity_mythic` (+), `avg_price_per_reprint` (+), `meta_modern_unknown` (−), `rarity_numeric` (+), `scarcity_x_rarity` (+), `is_full_art` (+), `is_penny_legal` (−)
+
+> The Lasso model's main value is **interpretability**: the 29 non-zero coefficients clearly show which features drive price predictions in a linear sense. XGBoost remains the production model for accuracy.
+
+### Lasso Reserved List model (~869 cards)
+
+| Metric | Value |
+|---|---|
+| **MAE** | €30.44 |
+| **Median AE** | €7.97 |
+| **R²** | −0.06 |
+| **Features used** | 19/277 |
+
+**Top features**: `set_era` (−), `is_core_set` (+), `edhrec_rank` (−), `is_reprint` (−), `meta_max_usage` (+)
 
 > **Note on R²**: The previous R² of 0.71 was inflated by (a) random train/test split mixing eras, (b) foil-price features that leaked current market info, and (c) time-since-release features. The current R² of 0.53 on a strict temporal split with zero leakage is a far more honest measure of real-world prediction quality.
 
