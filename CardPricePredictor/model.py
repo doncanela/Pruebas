@@ -4,11 +4,12 @@ model.py — Train, evaluate, and persist the XGBoost price-prediction model.
 Pipeline:
     1. Load feature CSV produced by feature_engineer.py
     2. Compute sample weights (rarity + price-based)
-    3. Split into train / test (stratified by rarity)
+    3. Temporal train / test split (older sets → train, newer → test)
     4. Scale features (StandardScaler)
     5. Train an XGBRegressor with sample weights
-    6. Evaluate with MAE, RMSE, R², and per-rarity breakdown
-    7. Save model + scaler + column list for inference
+    6. Evaluate with MAE, MedAE, RMSE, R², MAPE, SMAPE and breakdowns
+    7. Optionally run two-stage model (classify expensive → regress)
+    8. Save model + scaler + column list for inference
 """
 
 import os
@@ -63,14 +64,38 @@ def train(
     print(f"  min={weights.min():.2f}  max={weights.max():.2f}  "
           f"mean={weights.mean():.2f}  median={np.median(weights):.2f}")
 
-    # 3. Stratified train / test split (stratify by rarity)
-    rarity_strat = _get_rarity_labels(df)
-    X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
-        X, y_log, weights,
-        test_size=config.TEST_SIZE,
-        random_state=config.RANDOM_STATE,
-        stratify=rarity_strat,
-    )
+    # 3. Temporal train / test split (older sets → train, newer → test)
+    #    This avoids data leakage from mixing future and past cards.
+    if "_days_since_release" in df.columns:
+        # Sort by release date (larger _days_since_release = older)
+        sort_idx = df["_days_since_release"].values.argsort()[::-1]  # oldest first
+        n_train = int(len(sort_idx) * (1 - config.TEST_SIZE))
+        train_idx = sort_idx[:n_train]
+        test_idx = sort_idx[n_train:]
+
+        X_train = X.iloc[train_idx]
+        X_test = X.iloc[test_idx]
+        y_train = y_log.iloc[train_idx]
+        y_test = y_log.iloc[test_idx]
+        w_train = weights.iloc[train_idx]
+        w_test = weights.iloc[test_idx]
+
+        # Report temporal cutoff
+        train_days = df["_days_since_release"].iloc[train_idx]
+        test_days = df["_days_since_release"].iloc[test_idx]
+        cutoff_days = train_days.min()
+        print(f"Temporal split: train cards released ≥ {cutoff_days} days ago")
+        print(f"  Test set covers the most recent ~{test_days.max()} → {test_days.min()} days")
+    else:
+        # Fallback: stratified random split (when metadata column is absent)
+        rarity_strat = _get_rarity_labels(df)
+        X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
+            X, y_log, weights,
+            test_size=config.TEST_SIZE,
+            random_state=config.RANDOM_STATE,
+            stratify=rarity_strat,
+        )
+        print("  ⚠ No _days_since_release column — using random stratified split")
     print(f"Train: {len(X_train):,}   Test: {len(X_test):,}")
 
     # Print rarity distribution
@@ -120,7 +145,20 @@ def train(
     # Feature importance (top 25)
     _print_feature_importance(model, feature_cols, top_n=25)
 
-    # 7. Persist
+    # 7. Two-stage specialist: re-predict expensive cards with a dedicated model
+    print("\n── Two-stage model: expensive-card specialist ──")
+    y_pred_2stage = _two_stage_predict(
+        X_train, y_train, w_train,
+        X_test_sc, y_actual, y_pred,
+        scaler, feature_cols,
+    )
+    if y_pred_2stage is not None:
+        metrics_2stage = _evaluate(y_actual, y_pred_2stage)
+        print("  Combined two-stage metrics:")
+        _print_metrics(metrics_2stage)
+        _price_bracket_breakdown(y_actual, y_pred_2stage)
+
+    # 8. Persist
     _save(model, scaler, feature_cols)
 
     return metrics
@@ -132,6 +170,111 @@ def load_model():
     scaler = joblib.load(config.SCALER_PATH)
     feature_cols = joblib.load(config.FEATURE_COLS_PATH)
     return model, scaler, feature_cols
+
+
+# ─── Two-stage model ────────────────────────────────────────────────────────
+
+EXPENSIVE_THRESHOLD = 20.0  # €  — cards above this get a specialist model
+
+def _two_stage_predict(
+    X_train: pd.DataFrame,
+    y_train_log: pd.Series,
+    w_train: pd.Series,
+    X_test_sc: np.ndarray,
+    y_actual: np.ndarray,
+    y_pred_base: np.ndarray,
+    scaler: StandardScaler,
+    feature_cols: list[str],
+) -> np.ndarray | None:
+    """
+    Train a specialist regressor only on expensive cards (≥ EXPENSIVE_THRESHOLD).
+    Blend its predictions for cards the base model predicted as expensive.
+    Returns a new y_pred array with improved expensive-card predictions,
+    or None if there aren't enough expensive training samples.
+    """
+    y_train_real = np.expm1(y_train_log)
+    expensive_mask_train = y_train_real >= EXPENSIVE_THRESHOLD
+
+    n_expensive = expensive_mask_train.sum()
+    if n_expensive < 100:
+        print(f"  Only {n_expensive} expensive training samples — skipping specialist.")
+        return None
+
+    print(f"  Training specialist on {n_expensive:,} cards ≥ €{EXPENSIVE_THRESHOLD}")
+
+    # Train specialist on expensive subset
+    X_train_exp = X_train.loc[expensive_mask_train]
+    y_train_exp = y_train_log.loc[expensive_mask_train]
+    w_train_exp = w_train.loc[expensive_mask_train]
+
+    X_train_exp_sc = scaler.transform(X_train_exp)
+
+    # Build an eval set from expensive TEST cards only
+    expensive_mask_test = y_actual >= EXPENSIVE_THRESHOLD
+    n_exp_test = expensive_mask_test.sum()
+    if n_exp_test < 5:
+        print(f"  Only {n_exp_test} expensive test samples — skipping specialist.")
+        return None
+
+    X_test_exp_sc = X_test_sc[expensive_mask_test]
+    y_test_exp_log = np.log1p(y_actual[expensive_mask_test])
+
+    # Conservative specialist: fewer trees, shallower, squared error for stability
+    specialist_params = {
+        "n_estimators": 800,
+        "max_depth": 5,
+        "learning_rate": 0.05,
+        "subsample": 0.8,
+        "colsample_bytree": 0.5,
+        "reg_alpha": 2.0,
+        "reg_lambda": 5.0,
+        "min_child_weight": 10,
+        "gamma": 0.3,
+        "random_state": 42,
+        "early_stopping_rounds": 40,
+        "objective": "reg:squarederror",
+    }
+
+    specialist = XGBRegressor(**specialist_params)
+    specialist.fit(
+        X_train_exp_sc, y_train_exp,
+        sample_weight=w_train_exp.values,
+        eval_set=[(X_test_exp_sc, y_test_exp_log)],
+        verbose=0,
+    )
+    best = getattr(specialist, "best_iteration", specialist_params["n_estimators"])
+    print(f"  Specialist trained (best iteration: {best})")
+
+    # Validate specialist on expensive test cards before using it
+    spec_eval_pred = np.expm1(specialist.predict(X_test_exp_sc))
+    spec_eval_mae = np.mean(np.abs(y_actual[expensive_mask_test] - spec_eval_pred))
+    base_eval_mae = np.mean(np.abs(y_actual[expensive_mask_test] - y_pred_base[expensive_mask_test]))
+    print(f"  Expensive-card MAE — base: €{base_eval_mae:.2f} | specialist: €{spec_eval_mae:.2f}")
+
+    if spec_eval_mae >= base_eval_mae * 1.5:
+        print("  Specialist is worse than base model — skipping blend.")
+        return None
+
+    # For test cards the base model predicted ≥ threshold, use specialist
+    y_pred_combined = y_pred_base.copy()
+    pred_expensive_mask = y_pred_base >= EXPENSIVE_THRESHOLD
+
+    if pred_expensive_mask.sum() > 0:
+        spec_pred_log = specialist.predict(X_test_sc[pred_expensive_mask])
+        spec_pred = np.expm1(spec_pred_log)
+        # Clip to sane range (€0 – €500)
+        spec_pred = np.clip(spec_pred, 0.0, 500.0)
+        # Blend: 60% specialist, 40% base
+        blend = 0.6 * spec_pred + 0.4 * y_pred_base[pred_expensive_mask]
+        y_pred_combined[pred_expensive_mask] = blend
+        print(f"  Blended specialist predictions for {pred_expensive_mask.sum():,} cards")
+
+    # Save specialist for inference
+    specialist_path = os.path.join(config.MODEL_DIR, "specialist_expensive.joblib")
+    joblib.dump(specialist, specialist_path)
+    print(f"  Specialist saved to {specialist_path}")
+
+    return y_pred_combined
 
 
 # ─── Sample weighting ───────────────────────────────────────────────────────
@@ -176,11 +319,24 @@ def _get_rarity_labels(df: pd.DataFrame) -> pd.Series:
 # ─── Evaluation helpers ─────────────────────────────────────────────────────
 
 def _evaluate(y_true, y_pred) -> dict:
+    y_t = np.array(y_true)
+    y_p = np.array(y_pred)
+    # MAPE: exclude near-zero prices (< €0.05) to avoid division explosion
+    mape_mask = y_t >= 0.05
+    if mape_mask.sum() > 0:
+        mape = np.mean(np.abs(y_t[mape_mask] - y_p[mape_mask]) / y_t[mape_mask]) * 100
+    else:
+        mape = float("nan")
+    # SMAPE: symmetric, always defined
+    denom = (np.abs(y_t) + np.abs(y_p))
+    smape = np.mean(2.0 * np.abs(y_t - y_p) / np.where(denom == 0, 1, denom)) * 100
     return {
-        "MAE": mean_absolute_error(y_true, y_pred),
-        "MedAE": median_absolute_error(y_true, y_pred),
-        "RMSE": np.sqrt(mean_squared_error(y_true, y_pred)),
-        "R2": r2_score(y_true, y_pred),
+        "MAE": mean_absolute_error(y_t, y_p),
+        "MedAE": median_absolute_error(y_t, y_p),
+        "RMSE": np.sqrt(mean_squared_error(y_t, y_p)),
+        "R2": r2_score(y_t, y_p),
+        "MAPE": mape,
+        "SMAPE": smape,
     }
 
 
@@ -192,6 +348,8 @@ def _print_metrics(m: dict) -> None:
     print(f"║  MedAE  : €{m['MedAE']:.4f}               ║")
     print(f"║  RMSE   : €{m['RMSE']:.4f}               ║")
     print(f"║  R²     :  {m['R2']:.4f}                ║")
+    print(f"║  MAPE   :  {m['MAPE']:.2f}%               ║")
+    print(f"║  SMAPE  :  {m['SMAPE']:.2f}%               ║")
     print("╚══════════════════════════════════════╝\n")
 
 
@@ -229,7 +387,7 @@ def _print_feature_importance(model: XGBRegressor, feature_cols: list[str], top_
 
 
 def _price_bracket_breakdown(y_actual, y_pred) -> None:
-    """Show MAE per price bracket."""
+    """Show MAE, MAPE, SMAPE per price bracket."""
     y_a = np.array(y_actual)
     y_p = np.array(y_pred)
     brackets = [
@@ -242,13 +400,26 @@ def _price_bracket_breakdown(y_actual, y_pred) -> None:
         ("€20–€50", 20, 50),
         ("€50+", 50, 9999),
     ]
-    print("Per-price-bracket MAE:")
+    print("Per-price-bracket breakdown:")
+    print(f"  {'Bracket':>12s}  {'MAE':>10s}  {'MAPE':>8s}  {'SMAPE':>8s}  {'n':>7s}")
+    print(f"  {'─'*12}  {'─'*10}  {'─'*8}  {'─'*8}  {'─'*7}")
     for label, lo, hi in brackets:
         mask = (y_a >= lo) & (y_a < hi)
-        if mask.sum() == 0:
+        n = mask.sum()
+        if n == 0:
             continue
         mae = mean_absolute_error(y_a[mask], y_p[mask])
-        print(f"  {label:>12s}: €{mae:.4f}  (n={mask.sum():,})")
+        # MAPE (skip near-zero to avoid ÷0)
+        mape_sub = y_a[mask]
+        if (mape_sub >= 0.05).sum() > 0:
+            valid = mape_sub >= 0.05
+            mape = np.mean(np.abs(y_a[mask][valid] - y_p[mask][valid]) / mape_sub[valid]) * 100
+        else:
+            mape = float("nan")
+        # SMAPE
+        denom = np.abs(y_a[mask]) + np.abs(y_p[mask])
+        smape = np.mean(2.0 * np.abs(y_a[mask] - y_p[mask]) / np.where(denom == 0, 1, denom)) * 100
+        print(f"  {label:>12s}  €{mae:>8.4f}  {mape:>7.1f}%  {smape:>7.1f}%  {n:>7,}")
     print()
 
 

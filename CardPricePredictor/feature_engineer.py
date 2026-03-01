@@ -10,7 +10,7 @@ Every card is turned into a numeric row with the following feature groups:
  5. Text complexity   : oracle_text length, word count, line count
  6. Keywords          : binary flags for tracked keyword abilities
  7. Reprint / history : reprint_count, avg/min/max previous print price
- 8. Set features      : set age in days, set_size (total cards in set)
+ 8. Set features      : set_size (total cards in set)
  9. Legality          : how many formats the card is legal in
 10. Miscellaneous     : is_legendary, is_modal_dfc, has_adventure, etc.
 11. Serialized / Special treatments
@@ -21,7 +21,7 @@ Every card is turned into a numeric row with the following feature groups:
 16. Supply / scarcity  : set era, print-run proxy, supply drought
 17. Reprint risk       : Reserved List, reprint frequency, vulnerability
 18. Ban / restrict     : per-format ban flags, ban ratio
-19. Seasonality        : release month/quarter, recency, rotation proximity
+19. Seasonality        : release month/quarter (calendar features only, no leakage)
 20. Metagame demand    : actual tournament usage % from MTGGoldfish per format
 
 Target variable: Cardmarket EUR price  (prices.eur from Scryfall).
@@ -80,8 +80,11 @@ def build_feature_dataframe(cards: list[dict]) -> pd.DataFrame:
 
 
 def get_feature_columns(df: pd.DataFrame) -> list[str]:
-    """Return the list of feature column names (everything except the target)."""
-    return [c for c in df.columns if c != "price_eur"]
+    """Return the list of feature column names (excludes target and metadata)."""
+    return [
+        c for c in df.columns
+        if c != "price_eur" and not c.startswith("_")
+    ]
 
 
 # ─── Metagame enrichment ─────────────────────────────────────────────────────
@@ -252,9 +255,13 @@ def _card_to_row(card: dict) -> dict:
     released = card.get("released_at", "2020-01-01")
     try:
         release_date = datetime.strptime(released, "%Y-%m-%d")
-        row["days_since_release"] = (datetime.now() - release_date).days
+        _days_since_release = (datetime.now() - release_date).days
     except ValueError:
-        row["days_since_release"] = 0
+        _days_since_release = 0
+
+    # Metadata-only column (underscore prefix → excluded from features)
+    # Used for temporal train/test split, NOT for prediction.
+    row["_days_since_release"] = _days_since_release
 
     row["set_card_count"] = card.get("set_card_count", 0)
 
@@ -292,15 +299,8 @@ def _card_to_row(card: dict) -> dict:
     # Penny Dreadful legality as a cheapness proxy
     row["is_penny_legal"] = int(legalities.get("penny") == "legal")
 
-    # Foil price as demand signal (even though we predict non-foil)
-    foil_price_str = card.get("prices", {}).get("eur_foil")
-    row["foil_price"] = float(foil_price_str) if foil_price_str else 0.0
-    row["has_foil_price"] = int(foil_price_str is not None)
-    row["foil_multiplier"] = (
-        row["foil_price"] / row["price_eur"]
-        if row["price_eur"] and row["price_eur"] > 0 and row["foil_price"] > 0
-        else 0.0
-    )
+    # NOTE: foil_price / foil_multiplier REMOVED — they are current market
+    # prices and constitute leakage when predicting the non-foil price.
 
     # Collector number as proxy for position in set (chase cards often at end)
     collector_raw = card.get("collector_number", "0")
@@ -359,7 +359,6 @@ def _card_to_row(card: dict) -> dict:
     row["rarity_x_text_length"] = rn * row["text_length"]
     row["cmc_x_rarity"] = row["cmc"] * rn
     row["avg_prev_price_x_rarity"] = row["avg_prev_price"] * rn
-    row["foil_mult_x_rarity"] = row["foil_multiplier"] * rn
 
     # ── 13. Color identity hash ─────────────────────────────────
     color_id = card.get("color_identity", [])
@@ -471,6 +470,8 @@ def _card_to_row(card: dict) -> dict:
     row["edhrec_top_1000"] = int(0 < edhrec <= 1000)
 
     # Legacy/Vintage scarcity premium: legal only in old formats + high rarity
+    # Use oldest_printing_days (design age) instead of days_since_release
+    oldest_yrs = row["oldest_printing_days"] / 365.0
     row["legacy_vintage_only"] = int(
         row["is_legacy_legal"] == 1
         and row["is_modern_legal"] == 0
@@ -478,7 +479,7 @@ def _card_to_row(card: dict) -> dict:
         and row["is_standard_legal"] == 0
     )
     row["legacy_vintage_premium"] = (
-        row["legacy_vintage_only"] * rn * row["days_since_release"] / 365
+        row["legacy_vintage_only"] * rn * oldest_yrs
     )
 
     # Standard rotation risk: legal in Standard but could rotate out
@@ -520,12 +521,13 @@ def _card_to_row(card: dict) -> dict:
     row["supply_scarcity"] = 1.0 / max(row["print_run_proxy"], 0.01)
 
     # Old + rare + few reprints = genuinely scarce
-    age_years = row["days_since_release"] / 365.0
+    # Use oldest_printing_days (design age, known at release) — NOT days_since_release
+    oldest_yrs_supply = row["oldest_printing_days"] / 365.0
     row["is_old_rare"] = int(
-        age_years > 15 and rn >= 3 and row["reprint_count"] <= 2
+        oldest_yrs_supply > 15 and rn >= 3 and row["reprint_count"] <= 2
     )
     row["is_old_scarce"] = int(
-        age_years > 10 and row["reprint_count"] <= 1
+        oldest_yrs_supply > 10 and row["reprint_count"] <= 1
     )
 
     # Supply drought: how long without a reprint, weighted by total reprints
@@ -544,18 +546,19 @@ def _card_to_row(card: dict) -> dict:
         or "universes beyond" in card.get("set_name", "").lower()
     )
 
-    # Scarcity interaction: old × rare × low-supply
+    # Scarcity interaction: old × rare × low-supply (using design age)
     row["scarcity_x_rarity"] = row["supply_scarcity"] * rn
     row["scarcity_x_demand"] = row["supply_scarcity"] * row["num_formats_legal"]
-    row["age_x_rarity"] = age_years * rn
+    row["card_age_x_rarity"] = oldest_yrs_supply * rn
 
     # ── 17. Reprint risk ────────────────────────────────────────
     # Reserved List: Scryfall provides this directly — reprint is impossible
     row["is_reserved_list"] = int(card.get("reserved", False))
 
-    # Reprint frequency: reprints per year of existence
+    # Reprint frequency: reprints per year of card existence (design age)
+    card_age_yrs = row["oldest_printing_days"] / 365.0
     row["reprint_frequency"] = (
-        row["reprint_count"] / max(age_years, 0.1)
+        row["reprint_count"] / max(card_age_yrs, 0.1)
     )
 
     # Reprint vulnerability: high-demand, NOT reserved, been a while
@@ -569,7 +572,7 @@ def _card_to_row(card: dict) -> dict:
     # Reprint immunity: reserved OR very old + mythic + rare reprints
     row["reprint_immune"] = int(
         row["is_reserved_list"] == 1
-        or (age_years > 20 and rn >= 4 and row["reprint_count"] == 0)
+        or (card_age_yrs > 20 and rn >= 4 and row["reprint_count"] == 0)
     )
 
     # Reprint ceiling pressure: non-reserved, popular, reprintable
@@ -579,8 +582,8 @@ def _card_to_row(card: dict) -> dict:
         * (1.0 / max(row["days_since_last_reprint"], 1) * 365)
     )
 
-    # Reserved list interaction terms
-    row["reserved_x_age"] = row["is_reserved_list"] * age_years
+    # Reserved list interaction terms (using design age, not printing age)
+    row["reserved_x_age"] = row["is_reserved_list"] * card_age_yrs
     row["reserved_x_rarity"] = row["is_reserved_list"] * rn
     row["reserved_x_formats"] = row["is_reserved_list"] * row["num_formats_legal"]
     row["reserved_x_scarcity"] = row["is_reserved_list"] * row["supply_scarcity"]
@@ -626,7 +629,11 @@ def _card_to_row(card: dict) -> dict:
         row["is_restricted_anywhere"] * rn
     )
 
-    # ── 19. Seasonality & timing ────────────────────────────────
+    # ── 19. Seasonality (release-date-knowable features only) ──
+    # NOTE: days/months/years_since_release, hype_decay, recency buckets,
+    # rotation proximity — all REMOVED as leakage.  At t+60 these would be
+    # constants; keeping them variable in training conflates card age with
+    # card quality.  We keep ONLY calendar features that are known at release.
     try:
         release_dt = datetime.strptime(released, "%Y-%m-%d")
         row["release_month"] = release_dt.month
@@ -642,40 +649,16 @@ def _card_to_row(card: dict) -> dict:
     # Spring sets (Q1-Q2) with Pro Tour season
     row["is_competitive_season"] = int(row["release_quarter"] in (1, 2))
 
-    # Time since release in more granular units
-    row["months_since_release"] = row["days_since_release"] / 30.44
-    row["years_since_release"] = age_years
-
-    # Recency buckets (new cards are more volatile)
-    row["is_just_released"] = int(row["days_since_release"] <= 90)
-    row["is_recent"] = int(row["days_since_release"] <= 365)
-    row["is_mid_lifecycle"] = int(365 < row["days_since_release"] <= 730)
-    row["is_established"] = int(row["days_since_release"] > 730)
-
-    # Standard rotation proximity (approximate: 2 years from release)
-    if row["is_standard_legal"]:
-        months_in_standard = row["months_since_release"]
-        months_until_rotation = max(0, config.STANDARD_ROTATION_MONTHS - months_in_standard)
-        row["months_until_rotation"] = months_until_rotation
-        row["rotation_proximity"] = 1.0 / max(months_until_rotation, 1)
-        row["is_rotation_imminent"] = int(months_until_rotation <= 6)
-    else:
-        row["months_until_rotation"] = 0
-        row["rotation_proximity"] = 0.0
-        row["is_rotation_imminent"] = 0
-
-    # New-set hype decay: cards lose "hype premium" over first ~6 months
-    row["hype_decay"] = max(0, 1.0 - (row["months_since_release"] / 6.0))
-
-    # Cross-section interaction: seasonality × demand
-    row["recency_x_rarity"] = row["hype_decay"] * rn
-    row["recency_x_competitive"] = row["hype_decay"] * competitive_legal
-
     # ── 20. Metagame demand (MTGGoldfish tournament data) ───────
-    # Per-format usage percentage (0–100; 0 = not in top-50 staples)
+    # Per-format usage percentage (0–100; 0 = not in top staples)
     for fmt in ["standard", "pioneer", "modern", "legacy", "vintage"]:
         row[f"meta_{fmt}_pct"] = card.get(f"meta_{fmt}_pct", 0.0)
         row[f"meta_{fmt}_copies"] = card.get(f"meta_{fmt}_copies", 0.0)
+        # Missingness flag: 1 = card is legal but NOT in metagame data
+        # (could be a playable card outside top-N staples, vs 0 = not legal)
+        is_legal_in_fmt = int(legalities.get(fmt) == "legal")
+        has_meta = int(card.get(f"meta_{fmt}_pct", 0.0) > 0)
+        row[f"meta_{fmt}_unknown"] = int(is_legal_in_fmt == 1 and has_meta == 0)
 
     # Aggregate metagame signals
     row["meta_formats_played"] = card.get("meta_formats_played", 0)
