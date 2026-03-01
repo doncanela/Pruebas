@@ -4,7 +4,7 @@ main.py — CLI entry point for the MTG Card Price Predictor.
 Commands:
     collect   – Download card data from Scryfall (includes Cardmarket EUR prices)
     train     – Build features and train the XGBoost model
-    predict   – Predict the price of a card ~2 months after release
+    predict   – Predict the price of a card
     batch     – Predict prices for a list of cards
     snapshot  – Save current prices for all cards (run periodically)
     history   – Show prediction log and price snapshots for a card
@@ -304,7 +304,7 @@ def main():
     parser = argparse.ArgumentParser(
         prog="mtg-price-predictor",
         description="Predict Magic: The Gathering card prices (Cardmarket EUR) "
-                    "~2 months after release using machine learning.",
+                    "using machine learning.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

@@ -32,7 +32,7 @@ def predict_card(
     verbose: bool = True,
 ) -> dict:
     """
-    Predict the Cardmarket EUR price ~2 months after release.
+    Predict the Cardmarket EUR price for a given card.
 
     Parameters
     ----------
@@ -251,7 +251,7 @@ def _print_prediction(r: dict) -> None:
     current_str = f"€{r['current_price_eur']}" if r['current_price_eur'] else "N/A"
     predicted_str = f"€{r['predicted_price_eur']}"
     print(f"║  Current Cardmarket price : {current_str:<33s}║")
-    print(f"║  Predicted price (≈2 mo.) : {predicted_str:<33s}║")
+    print(f"║  Predicted price          : {predicted_str:<33s}║")
     print("╚══════════════════════════════════════════════════════════════╝")
     print()
 
