@@ -1,0 +1,120 @@
+Commander: Iron Spider, Stark Upgrade
+
+# Board Wipe
+1 All Is Dust
+1 Selective Obliteration
+
+# Copy
+1 Echoes of Eternity
+1 Marvin, Murderous Mimic
+1 Rings of Brighthearth
+1 Sculpting Steel
+
+# Counters
+1 Animation Module
+1 Arcbound Crusher
+1 Arcbound Ravager
+1 Hangarback Walker
+1 Iron Apprentice
+1 Omarthis, Ghostfire Initiate
+1 Patchwork Automaton
+1 Steel Overseer
+1 Stonecoil Serpent
+1 Syr Ginger, the Meal Ender
+1 The Ozolith
+
+# Draw
+1 Adaptive Omnitool
+1 Introduction to Prophecy
+1 Marketback Walker
+1 Mindless Automaton
+1 Mystic Forge
+1 Smuggler's Copter
+1 Towashi Guide-Bot
+1 Ugin's Mastery
+1 Zenith Chronicler
+
+# Evasion
+1 Brotherhood Vertibird
+1 Liberator, Urza's Battlethopter
+1 Ornithopter
+1 Shimmer Myr
+
+# Land
+1 Arch of Orazca
+1 Blast Zone
+1 Blinkmoth Nexus
+1 Bonders' Enclave
+1 Buried Ruin
+1 Conduit Pylons
+1 Crystal Grotto
+1 Darksteel Citadel
+1 Gallifrey Council Chamber
+1 Hidden Grotto
+1 Karn's Bastion
+1 Mishra's Factory
+1 Muraganda Raceway
+1 Reliquary Tower
+1 Rogue's Passage
+1 Scavenger Grounds
+1 Sea Gate Wreckage
+1 Shrine of the Forsaken Gods
+1 Swarmyard
+1 The Grey Havens
+1 Tomb of the Spirit Dragon
+1 Treasure Vault
+1 Tyrite Sanctum
+1 Urza's Cave
+1 Urza's Factory
+1 Urza's Mine
+1 Urza's Power Plant
+1 Urza's Tower
+1 War Room
+5 Wastes
+1 Zhalfirin Void
+
+# Proliferate
+1 Contagion Engine
+1 Recon Craft Theta
+1 Surge Conductor
+1 Throne of Geth
+
+# Protection
+1 Eldritch Immunity
+1 Karn, the Great Creator
+1 Lightning Greaves
+1 Swiftfoot Boots
+
+# Ramp
+1 Basalt Monolith
+1 Cryptic Trilobite
+1 Crystalline Crawler
+1 Environmental Sciences
+1 Forsaken Monument
+1 Foundry Inspector
+1 Glaring Fleshraker
+1 Hedron Crawler
+1 Jhoira's Familiar
+1 Ornithopter of Paradise
+1 Palladium Myr
+1 Sol Ring
+1 Sonic Screwdriver
+
+# Recursion
+1 Arcbound Reclaimer
+1 Scrap Trawler
+1 Scrapyard Recombiner
+
+# Removal
+1 Null Elemental Blast
+1 Ugin, the Ineffable
+1 Walking Ballista
+1 Warping Wail
+
+# Untap
+1 Clock of Omens
+1 Manifold Key
+1 Patriar's Seal
+1 Sting, the Glinting Dagger
+1 Unwinding Clock
+1 Voltaic Construct
