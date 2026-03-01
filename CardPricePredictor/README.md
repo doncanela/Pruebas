@@ -1,6 +1,8 @@
 # MTG Card Price Predictor
 
-Predict **Cardmarket EUR prices** of Magic: The Gathering cards **~2 months after release** using machine learning (XGBoost).
+Predict **Cardmarket EUR Trend prices** of Magic: The Gathering cards using machine learning (XGBoost).
+
+This is a **cross-sectional price model**: it learns the relationship between card attributes and current market value across ~77,000 cards. For newly released cards it provides a useful price estimate based on how similar attributes are valued across the rest of the market.
 
 Data is sourced from the **Scryfall API** (Cardmarket prices + card metadata) and **MTGGoldfish** (competitive metagame tournament data).
 
@@ -173,13 +175,13 @@ CardPricePredictor/
 
 ## How it works
 
-1. **Data collection**: The Scryfall bulk API provides every Magic card ever printed, including Cardmarket EUR prices (`prices.eur`). We filter for English paper cards with a known price (~77,000 cards).
+1. **Data collection**: The Scryfall bulk API provides every Magic card ever printed, including Cardmarket EUR prices (`prices.eur`) as of the download date. We filter for English paper cards with a known price (~77,000 cards). Prices reflect the **current** market state, not historical values.
 
-2. **Reprint enrichment**: For each card, we compute reprint count, average/min/max/std price of older printings, days since last reprint, and oldest printing age — strong signals for predicting new print prices.
+2. **Reprint enrichment**: For each card, we compute reprint count, average/min/max/std price of older printings (using current Scryfall prices, not historical), days since last reprint, and oldest printing age.
 
 3. **Metagame enrichment**: MTGGoldfish "Format Staples" pages are scraped to get the top-50 most-played cards in each competitive format (Standard, Pioneer, Modern, Legacy, Vintage) with their usage percentages and average copies per deck. Cached for 7 days.
 
-4. **Feature engineering**: Each card is converted to 277 numeric features across 20 groups — from basic stats to metagame demand, supply scarcity, Reserved List status, ban impact, and seasonality signals. All features are audited for leakage: no foil prices, no time-since-release, no current-market-price dependencies.
+4. **Feature engineering**: Each card is converted to 277 numeric features across 20 groups — from basic stats to metagame demand, supply scarcity, Reserved List status, ban impact, and seasonality signals. All features are audited for intra-snapshot leakage (no foil prices, no time-since-release). See the Temporal Caveats section for inter-snapshot considerations (EDHREC, metagame, reprint prices).
 
 5. **Model**: An XGBoost gradient-boosted tree regressor is trained on log-transformed prices with PseudoHuber loss function (robust to outliers). Sample weights boost rare/mythic and expensive cards. **Temporal train/test split** (train on older sets, test on newer) prevents era-mixing leakage. A **two-stage specialist** re-predicts expensive cards (≥€20) with a dedicated model blended 60/40 with the base predictions.
 
@@ -211,8 +213,11 @@ Evaluated on a **temporal test set** (most recent ~2.4 years of cards, trained o
 | **Median AE** | €0.14 |
 | **RMSE** | €4.63 |
 | **R²** | 0.54 |
-| **MAPE** | 64.5% |
+| **MAPE (all ≥€0.05)** | 64.5% |
+| **MAPE (≥€1 only)** | 48.8% |
 | **SMAPE** | 46.1% |
+
+> **On MAPE**: The 64.5% headline number is inflated by ultra-cheap cards (€0–€0.50, n=8,980) where dividing a €0.14 error by a €0.10 price produces 140%. For cards ≥€1, MAPE drops to **48.8%** — a more meaningful number.
 
 ### Two-stage model (with expensive-card specialist)
 
@@ -233,16 +238,34 @@ For cards ≥€20, a specialist model trained on expensive cards only is blende
 
 ### Per-price-bracket breakdown
 
-| Bracket | MAE | MAPE | SMAPE | n |
-|---|---|---|---|---|
-| €0–€0.50 | €0.14 | 73.0% | 47.9% | 8,980 |
-| €0.50–€1 | €0.48 | 67.7% | 44.4% | 1,631 |
-| €1–€2 | €0.85 | 60.5% | 44.0% | 1,260 |
-| €2–€5 | €1.62 | 50.0% | 43.1% | 1,595 |
-| €5–€10 | €3.03 | 43.1% | 40.6% | 951 |
-| €10–€20 | €5.11 | 37.0% | 40.8% | 608 |
-| €20–€50 | €10.64 | 35.4% | 47.5% | 336 |
-| €50+ | €46.08 | 52.0% | 83.1% | 39 |
+| Bracket | MAE | nMAE | MAPE | SMAPE | n |
+|---|---|---|---|---|---|
+| €0–€0.50 | €0.14 | 58% | 73.0% | 47.9% | 8,980 |
+| €0.50–€1 | €0.48 | 64% | 67.7% | 44.4% | 1,631 |
+| €1–€2 | €0.85 | 57% | 60.5% | 44.0% | 1,260 |
+| €2–€5 | €1.62 | 46% | 50.0% | 43.1% | 1,595 |
+| €5–€10 | €3.03 | 40% | 43.1% | 40.6% | 951 |
+| €10–€20 | €5.11 | 34% | 37.0% | 40.8% | 608 |
+| €20–€50 | €10.64 | 30% | 35.4% | 47.5% | 336 |
+| €50+ | €46.08 | 46% | 52.0% | 83.1% | 39 |
+
+**nMAE** = bracket-normalized MAE (MAE ÷ bracket midpoint), comparable across price tiers.
+
+### Bracket classification accuracy
+
+| Metric | Value |
+|---|---|
+| Exact bracket match | 70.3% |
+| Within ±1 bracket | 94.0% |
+
+### Within-X% accuracy (cards ≥€1, n=4,789)
+
+| Threshold | Accuracy |
+|---|---|
+| Within ±25% | 43.4% |
+| Within ±50% | 67.6% |
+| Within ±75% | 83.0% |
+| Within ±100% | 91.1% |
 
 > **Note on R²**: The previous R² of 0.71 was inflated by (a) random train/test split mixing eras, (b) foil-price features that leaked current market info, and (c) time-since-release features. The current R² of 0.54 on a strict temporal split with zero leakage is a far more honest measure of real-world prediction quality.
 
@@ -253,6 +276,42 @@ For cards ≥€20, a specialist model trained on expensive cards only is blende
 - **Data sources**: Scryfall (free, includes Cardmarket EUR prices) + MTGGoldfish (free, format staples). No API keys needed.
 - **Rate limiting**: Scryfall requires 50–100 ms between requests; MTGGoldfish gets 1.5 s delays. Both are respected.
 - **Database**: Optional Neon PostgreSQL stores cards, predictions, and price snapshots for long-term tracking.
-- **Price target**: The model predicts `prices.eur` (Cardmarket trend price). For new cards, this approximates the ~2-month settled price.
+- **Price target**: The model predicts `prices.eur` (Cardmarket Trend price at download time). This is a **cross-sectional** model, not a temporal forecast — see the Temporal Caveats section below.
 - **Reserved List**: Cards on the Reserved List are detected via Scryfall's `reserved` field — the model's #1 most important interaction feature.
 - **Metagame**: Tournament usage from MTGGoldfish covers the top-50 staples per format. Now includes **missingness flags** (`meta_{fmt}_unknown`) to distinguish "legal but not in data" from "not legal" — the model can learn that being legal-but-not-a-staple is different from being banned/illegal.
+
+---
+
+## Temporal caveats (important for interpretation)
+
+This model is a **cross-sectional price model**, not a true temporal forecaster. Understanding what this means:
+
+### What the model actually predicts
+
+The label (`price_eur`) is the Cardmarket Trend price **at the time Scryfall data was downloaded**, regardless of when the card was released. A 2018 card's label is its 2026 price. The model learns: "given these current attributes and current market context, what should this card cost right now?"
+
+### Why this is useful for new cards
+
+At inference time, you give the model a newly released card's attributes (rarity, text, keywords, metagame demand, etc.), and it compares against the learned price structure of all ~77,000 cards. This produces a reasonable estimate for what the card "should" cost based on comparable cards.
+
+### Features that use snapshot-contemporaneous data
+
+| Feature group | What it reflects | Consequence |
+|---|---|---|
+| **EDHREC rank** | Current commander popularity (from Scryfall) | A 2018 card's EDHREC rank reflects 8 years of deck data. At release, its rank would have been very different. |
+| **MTGGoldfish metagame** | Current tournament metagame scraped today | Cards that are popular today may not have been popular at release. |
+| **Reprint price stats** (avg/min/max/std) | Current Scryfall prices of older printings | The `sib_release <= card_release` filter ensures only older printings, but uses their *current* prices — not prices at the card's release date. |
+| **Legality / bans** | Current format legality | Cards banned after release have their current (banned) status. |
+
+### Why the temporal split is still valuable
+
+Despite all features being snapshot-contemporaneous, the temporal train/test split tests whether price patterns learned from older sets **generalize to newer sets** (which have different mechanics, power levels, and design philosophies). This is a harder test than random splitting and avoids overfitting to set-specific patterns.
+
+### What would be needed for a true +60-day forecast
+
+1. **Historical price snapshots** — store `price_at(release_date + 60)` as the label
+2. **Point-in-time EDHREC ranks** — version ranks by date
+3. **Point-in-time metagame** — historical MTGGoldfish snapshots
+4. **Point-in-time reprint prices** — prices of older printings as of the prediction date
+
+The weekly snapshot system (Neon DB + GitHub Actions) is a step toward accumulating this data.

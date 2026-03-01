@@ -327,6 +327,12 @@ def _evaluate(y_true, y_pred) -> dict:
         mape = np.mean(np.abs(y_t[mape_mask] - y_p[mape_mask]) / y_t[mape_mask]) * 100
     else:
         mape = float("nan")
+    # MAPE for cards ≥€1 only (avoids "cheap card MAPE inflation")
+    mape1_mask = y_t >= 1.0
+    if mape1_mask.sum() > 0:
+        mape_above_1 = np.mean(np.abs(y_t[mape1_mask] - y_p[mape1_mask]) / y_t[mape1_mask]) * 100
+    else:
+        mape_above_1 = float("nan")
     # SMAPE: symmetric, always defined
     denom = (np.abs(y_t) + np.abs(y_p))
     smape = np.mean(2.0 * np.abs(y_t - y_p) / np.where(denom == 0, 1, denom)) * 100
@@ -336,21 +342,23 @@ def _evaluate(y_true, y_pred) -> dict:
         "RMSE": np.sqrt(mean_squared_error(y_t, y_p)),
         "R2": r2_score(y_t, y_p),
         "MAPE": mape,
+        "MAPE_above_1": mape_above_1,
         "SMAPE": smape,
     }
 
 
 def _print_metrics(m: dict) -> None:
-    print("\n╔══════════════════════════════════════╗")
-    print("║       Model Evaluation (EUR)         ║")
-    print("╠══════════════════════════════════════╣")
-    print(f"║  MAE    : €{m['MAE']:.4f}               ║")
-    print(f"║  MedAE  : €{m['MedAE']:.4f}               ║")
-    print(f"║  RMSE   : €{m['RMSE']:.4f}               ║")
-    print(f"║  R²     :  {m['R2']:.4f}                ║")
-    print(f"║  MAPE   :  {m['MAPE']:.2f}%               ║")
-    print(f"║  SMAPE  :  {m['SMAPE']:.2f}%               ║")
-    print("╚══════════════════════════════════════╝\n")
+    print("\n╔═══════════════════════════════════════════╗")
+    print("║          Model Evaluation (EUR)           ║")
+    print("╠═══════════════════════════════════════════╣")
+    print(f"║  MAE          : €{m['MAE']:.4f}                 ║")
+    print(f"║  MedAE        : €{m['MedAE']:.4f}                 ║")
+    print(f"║  RMSE         : €{m['RMSE']:.4f}                 ║")
+    print(f"║  R²           :  {m['R2']:.4f}                  ║")
+    print(f"║  MAPE (all)   :  {m['MAPE']:.2f}%                 ║")
+    print(f"║  MAPE (≥€1)   :  {m['MAPE_above_1']:.2f}%                 ║")
+    print(f"║  SMAPE        :  {m['SMAPE']:.2f}%                 ║")
+    print("╚═══════════════════════════════════════════╝\n")
 
 
 def _rarity_breakdown(
@@ -387,28 +395,30 @@ def _print_feature_importance(model: XGBRegressor, feature_cols: list[str], top_
 
 
 def _price_bracket_breakdown(y_actual, y_pred) -> None:
-    """Show MAE, MAPE, SMAPE per price bracket."""
+    """Show MAE, normalized MAE, MAPE, SMAPE per price bracket + accuracy."""
     y_a = np.array(y_actual)
     y_p = np.array(y_pred)
     brackets = [
-        ("€0–€0.50", 0, 0.50),
-        ("€0.50–€1", 0.50, 1),
-        ("€1–€2", 1, 2),
-        ("€2–€5", 2, 5),
-        ("€5–€10", 5, 10),
-        ("€10–€20", 10, 20),
-        ("€20–€50", 20, 50),
-        ("€50+", 50, 9999),
+        ("€0–€0.50", 0, 0.50, 0.25),
+        ("€0.50–€1", 0.50, 1, 0.75),
+        ("€1–€2", 1, 2, 1.5),
+        ("€2–€5", 2, 5, 3.5),
+        ("€5–€10", 5, 10, 7.5),
+        ("€10–€20", 10, 20, 15.0),
+        ("€20–€50", 20, 50, 35.0),
+        ("€50+", 50, 9999, 100.0),
     ]
     print("Per-price-bracket breakdown:")
-    print(f"  {'Bracket':>12s}  {'MAE':>10s}  {'MAPE':>8s}  {'SMAPE':>8s}  {'n':>7s}")
-    print(f"  {'─'*12}  {'─'*10}  {'─'*8}  {'─'*8}  {'─'*7}")
-    for label, lo, hi in brackets:
+    print(f"  {'Bracket':>12s}  {'MAE':>10s}  {'nMAE':>6s}  {'MAPE':>8s}  {'SMAPE':>8s}  {'n':>7s}")
+    print(f"  {'─'*12}  {'─'*10}  {'─'*6}  {'─'*8}  {'─'*8}  {'─'*7}")
+    for label, lo, hi, midpoint in brackets:
         mask = (y_a >= lo) & (y_a < hi)
         n = mask.sum()
         if n == 0:
             continue
         mae = mean_absolute_error(y_a[mask], y_p[mask])
+        # Bracket-normalized MAE (MAE / midpoint in %)
+        nmae = (mae / midpoint) * 100
         # MAPE (skip near-zero to avoid ÷0)
         mape_sub = y_a[mask]
         if (mape_sub >= 0.05).sum() > 0:
@@ -419,7 +429,52 @@ def _price_bracket_breakdown(y_actual, y_pred) -> None:
         # SMAPE
         denom = np.abs(y_a[mask]) + np.abs(y_p[mask])
         smape = np.mean(2.0 * np.abs(y_a[mask] - y_p[mask]) / np.where(denom == 0, 1, denom)) * 100
-        print(f"  {label:>12s}  €{mae:>8.4f}  {mape:>7.1f}%  {smape:>7.1f}%  {n:>7,}")
+        print(f"  {label:>12s}  €{mae:>8.4f}  {nmae:>5.0f}%  {mape:>7.1f}%  {smape:>7.1f}%  {n:>7,}")
+    print()
+
+    # Classification-style bracket accuracy: is the prediction in the right bracket?
+    _bracket_accuracy(y_a, y_p, brackets)
+
+    # Within-X% accuracy for cards ≥€1
+    _within_threshold_accuracy(y_a, y_p)
+
+
+def _bracket_accuracy(y_actual, y_pred, brackets) -> None:
+    """Classification: what % of cards are predicted into the correct bracket?"""
+    def _get_bracket(price, brackets):
+        for i, (_, lo, hi, _) in enumerate(brackets):
+            if lo <= price < hi:
+                return i
+        return len(brackets) - 1
+
+    y_a = np.array(y_actual)
+    y_p = np.array(y_pred)
+    n = len(y_a)
+    exact = sum(1 for a, p in zip(y_a, y_p) if _get_bracket(a, brackets) == _get_bracket(p, brackets))
+    within_1 = sum(1 for a, p in zip(y_a, y_p) if abs(_get_bracket(a, brackets) - _get_bracket(p, brackets)) <= 1)
+    print("Bracket classification accuracy:")
+    print(f"  Exact bracket match: {exact:,}/{n:,} = {exact/n*100:.1f}%")
+    print(f"  Within ±1 bracket:   {within_1:,}/{n:,} = {within_1/n*100:.1f}%")
+    print()
+
+
+def _within_threshold_accuracy(y_actual, y_pred) -> None:
+    """For cards ≥€1: what % are within X% of the actual price?"""
+    y_a = np.array(y_actual)
+    y_p = np.array(y_pred)
+    mask = y_a >= 1.0
+    if mask.sum() < 10:
+        return
+    y_a_f = y_a[mask]
+    y_p_f = y_p[mask]
+    n = len(y_a_f)
+    pct_errors = np.abs(y_a_f - y_p_f) / y_a_f
+
+    thresholds = [0.25, 0.50, 0.75, 1.0]
+    print(f"Within-X% accuracy (cards ≥€1, n={n:,}):")
+    for t in thresholds:
+        hit = (pct_errors <= t).sum()
+        print(f"  Within ±{t*100:.0f}%: {hit:,}/{n:,} = {hit/n*100:.1f}%")
     print()
 
 

@@ -24,7 +24,12 @@ Every card is turned into a numeric row with the following feature groups:
 19. Seasonality        : release month/quarter (calendar features only, no leakage)
 20. Metagame demand    : actual tournament usage % from MTGGoldfish per format
 
-Target variable: Cardmarket EUR price  (prices.eur from Scryfall).
+Target variable: Cardmarket EUR price  (prices.eur from Scryfall, snapshot at download time).
+
+Note: This is a cross-sectional model. All features (EDHREC rank, metagame,
+reprint prices, legality) are snapshot-contemporaneous: they reflect the state
+at the time of data collection, not at the card's release date.  See README
+for full temporal caveats.
 """
 
 import re
