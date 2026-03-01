@@ -113,6 +113,35 @@ PREMIUM_SET_TYPES = {
     "spellbook", "arsenal",
 }
 
+# ─── Format categories ──────────────────────────────────────────────────────
+# Competitive formats where metagame shifts / bans move prices sharply
+COMPETITIVE_FORMATS = ["standard", "pioneer", "modern", "legacy", "vintage"]
+# Casual / eternal formats with stickier demand
+CASUAL_FORMATS = ["commander", "pauper", "oathbreaker", "penny"]
+
+# ─── Set era boundaries (for print-run size proxy) ──────────────────────────
+# Smaller print runs → more scarcity. Approximate era boundaries:
+SET_ERA_BOUNDARIES = {
+    # (start_year, end_year, era_label, print_run_proxy)
+    "alpha_beta":     (1993, 1994, 1),   # tiny runs
+    "early":          (1994, 1998, 2),   # small
+    "pre_modern":     (1998, 2003, 3),   # medium
+    "modern_frame":   (2003, 2008, 4),   # growing
+    "mythic_era":     (2008, 2015, 5),   # mythic rarity introduced
+    "modern_era":     (2015, 2020, 6),   # high volume
+    "current":        (2020, 2030, 7),   # very high volume
+}
+
+# ─── Secret Lair / Universes Beyond set types or codes ──────────────────────
+SECRET_LAIR_SET_TYPES = {"box", "funny"}  # Scryfall uses various types
+UNIVERSES_BEYOND_MARKERS = {
+    "who", "ltr", "ltc", "40k", "pip", "acr",  # known UB set codes
+}
+
+# ─── Standard rotation year-set mapping ─────────────────────────────────────
+# Standard rotates annually in the fall; sets within ~2 years are "safe"
+STANDARD_ROTATION_MONTHS = 24  # approximate months a set stays in Standard
+
 # ─── Ensure directories exist ────────────────────────────────────────────────
 for d in (DATA_DIR, MODEL_DIR):
     os.makedirs(d, exist_ok=True)

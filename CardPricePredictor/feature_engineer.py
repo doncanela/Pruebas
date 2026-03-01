@@ -17,6 +17,11 @@ Every card is turned into a numeric row with the following feature groups:
 12. Interaction terms  : rarity × demand signals
 13. Color identity     : bitmask, size, multicolor flags
 14. Alternative costs  : substitutive-cost keywords & text patterns
+15. Format demand      : competitive vs casual demand profile, rotation risk
+16. Supply / scarcity  : set era, print-run proxy, supply drought
+17. Reprint risk       : Reserved List, reprint frequency, vulnerability
+18. Ban / restrict     : per-format ban flags, ban ratio
+19. Seasonality        : release month/quarter, recency, rotation proximity
 
 Target variable: Cardmarket EUR price  (prices.eur from Scryfall).
 """
@@ -385,6 +390,235 @@ def _card_to_row(card: dict) -> dict:
     row["alt_cost_x_rarity"] = row["has_alt_cost"] * rn
     row["alt_cost_x_cmc"] = row["has_alt_cost"] * row["cmc"]
     row["alt_cost_x_formats"] = row["has_alt_cost"] * row["num_formats_legal"]
+
+    # ── 15. Format demand profile ───────────────────────────────
+    # Competitive formats: Standard, Pioneer, Modern, Legacy, Vintage
+    competitive_legal = sum(
+        1 for fmt in config.COMPETITIVE_FORMATS
+        if legalities.get(fmt) == "legal"
+    )
+    casual_legal = sum(
+        1 for fmt in config.CASUAL_FORMATS
+        if legalities.get(fmt) == "legal"
+    )
+    row["competitive_formats_legal"] = competitive_legal
+    row["casual_formats_legal"] = casual_legal
+    row["is_multi_format_staple"] = int(competitive_legal >= 3)
+    row["is_competitive_only"] = int(competitive_legal > 0 and casual_legal == 0)
+    row["is_casual_only"] = int(casual_legal > 0 and competitive_legal == 0)
+
+    # Commander demand score: EDHREC rank (lower=better) + color coverage
+    edhrec = row["edhrec_rank"] if row["edhrec_rank"] > 0 else 100000
+    row["commander_demand_score"] = (
+        row["is_commander_legal"]
+        * (1.0 / max(edhrec, 1))
+        * 10000
+    )
+    # Commander staple tiers by EDHREC rank
+    row["edhrec_top_100"] = int(0 < edhrec <= 100)
+    row["edhrec_top_500"] = int(0 < edhrec <= 500)
+    row["edhrec_top_1000"] = int(0 < edhrec <= 1000)
+
+    # Legacy/Vintage scarcity premium: legal only in old formats + high rarity
+    row["legacy_vintage_only"] = int(
+        row["is_legacy_legal"] == 1
+        and row["is_modern_legal"] == 0
+        and row["is_pioneer_legal"] == 0
+        and row["is_standard_legal"] == 0
+    )
+    row["legacy_vintage_premium"] = (
+        row["legacy_vintage_only"] * rn * row["days_since_release"] / 365
+    )
+
+    # Standard rotation risk: legal in Standard but could rotate out
+    row["standard_rotation_risk"] = int(
+        row["is_standard_legal"] == 1 and row["is_pioneer_legal"] == 0
+    )
+
+    # Format demand breadth × rarity (wider play + higher rarity = higher price)
+    row["format_breadth_x_rarity"] = competitive_legal * rn
+    row["competitive_x_commander"] = competitive_legal * row["is_commander_legal"]
+    row["demand_diversity"] = competitive_legal + casual_legal
+
+    # ── 16. Supply / scarcity ───────────────────────────────────
+    # Determine set era from release year (proxy for print run size)
+    try:
+        release_year = int(released[:4])
+    except (ValueError, IndexError):
+        release_year = 2020
+
+    era_score = 7  # default: current era
+    for _era, (start, end, score) in config.SET_ERA_BOUNDARIES.items():
+        if start <= release_year < end:
+            era_score = score
+            break
+    row["set_era"] = era_score
+
+    # Estimated print-run proxy: era × set_type factor
+    set_type = card.get("set_type", "expansion")
+    type_factor = {
+        "expansion": 1.0, "core": 1.0,
+        "masters": 0.4, "masterpiece": 0.1,
+        "commander": 0.5, "draft_innovation": 0.6,
+        "from_the_vault": 0.05, "premium_deck": 0.1,
+        "spellbook": 0.1, "arsenal": 0.1,
+        "box": 0.3,  # Secret Lair
+    }.get(set_type, 0.7)
+    # Lower era_score = older = smaller print runs → lower supply score
+    row["print_run_proxy"] = era_score * type_factor
+    row["supply_scarcity"] = 1.0 / max(row["print_run_proxy"], 0.01)
+
+    # Old + rare + few reprints = genuinely scarce
+    age_years = row["days_since_release"] / 365.0
+    row["is_old_rare"] = int(
+        age_years > 15 and rn >= 3 and row["reprint_count"] <= 2
+    )
+    row["is_old_scarce"] = int(
+        age_years > 10 and row["reprint_count"] <= 1
+    )
+
+    # Supply drought: how long without a reprint, weighted by total reprints
+    row["reprint_drought_intensity"] = (
+        row["days_since_last_reprint"] / max(row["reprint_count"] + 1, 1)
+    )
+    row["supply_drought_years"] = row["days_since_last_reprint"] / 365.0
+
+    # Secret Lair and Universes Beyond detection
+    set_code = card.get("set", "")
+    row["is_secret_lair"] = int(
+        set_type == "box" or "sld" in set_code.lower()
+    )
+    row["is_universes_beyond"] = int(
+        set_code.lower() in config.UNIVERSES_BEYOND_MARKERS
+        or "universes beyond" in card.get("set_name", "").lower()
+    )
+
+    # Scarcity interaction: old × rare × low-supply
+    row["scarcity_x_rarity"] = row["supply_scarcity"] * rn
+    row["scarcity_x_demand"] = row["supply_scarcity"] * row["num_formats_legal"]
+    row["age_x_rarity"] = age_years * rn
+
+    # ── 17. Reprint risk ────────────────────────────────────────
+    # Reserved List: Scryfall provides this directly — reprint is impossible
+    row["is_reserved_list"] = int(card.get("reserved", False))
+
+    # Reprint frequency: reprints per year of existence
+    row["reprint_frequency"] = (
+        row["reprint_count"] / max(age_years, 0.1)
+    )
+
+    # Reprint vulnerability: high-demand, NOT reserved, been a while
+    row["reprint_vulnerable"] = int(
+        row["is_reserved_list"] == 0
+        and rn >= 3
+        and row["num_formats_legal"] >= 3
+        and row["days_since_last_reprint"] > 365
+    )
+
+    # Reprint immunity: reserved OR very old + mythic + rare reprints
+    row["reprint_immune"] = int(
+        row["is_reserved_list"] == 1
+        or (age_years > 20 and rn >= 4 and row["reprint_count"] == 0)
+    )
+
+    # Reprint ceiling pressure: non-reserved, popular, reprintable
+    row["reprint_ceiling_pressure"] = (
+        (1 - row["is_reserved_list"])
+        * row["num_formats_legal"]
+        * (1.0 / max(row["days_since_last_reprint"], 1) * 365)
+    )
+
+    # Reserved list interaction terms
+    row["reserved_x_age"] = row["is_reserved_list"] * age_years
+    row["reserved_x_rarity"] = row["is_reserved_list"] * rn
+    row["reserved_x_formats"] = row["is_reserved_list"] * row["num_formats_legal"]
+    row["reserved_x_scarcity"] = row["is_reserved_list"] * row["supply_scarcity"]
+
+    # ── 18. Ban / restrict status ───────────────────────────────
+    banned_formats = []
+    restricted_formats = []
+    for fmt, status in legalities.items():
+        if status == "banned":
+            banned_formats.append(fmt)
+        elif status == "restricted":
+            restricted_formats.append(fmt)
+
+    row["num_formats_banned"] = len(banned_formats)
+    row["num_formats_restricted"] = len(restricted_formats)
+    row["is_banned_anywhere"] = int(len(banned_formats) > 0)
+    row["is_restricted_anywhere"] = int(len(restricted_formats) > 0)
+
+    # Per-format ban flags (competitive formats most impactful on price)
+    row["is_banned_in_standard"] = int(legalities.get("standard") == "banned")
+    row["is_banned_in_pioneer"] = int(legalities.get("pioneer") == "banned")
+    row["is_banned_in_modern"] = int(legalities.get("modern") == "banned")
+    row["is_banned_in_legacy"] = int(legalities.get("legacy") == "banned")
+    row["is_banned_in_commander"] = int(legalities.get("commander") == "banned")
+    row["is_restricted_in_vintage"] = int(legalities.get("vintage") == "restricted")
+
+    # Ban impact score: banned in more competitive formats = bigger price hit
+    # (unless it's a collector piece → handled by rarity/age interactions)
+    row["ban_impact_score"] = (
+        row["is_banned_in_standard"] * 1.0
+        + row["is_banned_in_pioneer"] * 1.5
+        + row["is_banned_in_modern"] * 2.0
+        + row["is_banned_in_legacy"] * 2.5
+        + row["is_banned_in_commander"] * 3.0
+    )
+
+    # Ban ratio: fraction of formats where card is banned
+    total_formats = len(legalities) if legalities else 1
+    row["ban_ratio"] = len(banned_formats) / total_formats
+
+    # Restricted = powerful but not banned → often high value
+    row["restricted_power_signal"] = (
+        row["is_restricted_anywhere"] * rn
+    )
+
+    # ── 19. Seasonality & timing ────────────────────────────────
+    try:
+        release_dt = datetime.strptime(released, "%Y-%m-%d")
+        row["release_month"] = release_dt.month
+        row["release_quarter"] = (release_dt.month - 1) // 3 + 1
+        row["release_day_of_year"] = release_dt.timetuple().tm_yday
+    except ValueError:
+        row["release_month"] = 1
+        row["release_quarter"] = 1
+        row["release_day_of_year"] = 1
+
+    # Fall sets (Q4) tend to have holiday-driven sales
+    row["is_fall_set"] = int(row["release_quarter"] == 4)
+    # Spring sets (Q1-Q2) with Pro Tour season
+    row["is_competitive_season"] = int(row["release_quarter"] in (1, 2))
+
+    # Time since release in more granular units
+    row["months_since_release"] = row["days_since_release"] / 30.44
+    row["years_since_release"] = age_years
+
+    # Recency buckets (new cards are more volatile)
+    row["is_just_released"] = int(row["days_since_release"] <= 90)
+    row["is_recent"] = int(row["days_since_release"] <= 365)
+    row["is_mid_lifecycle"] = int(365 < row["days_since_release"] <= 730)
+    row["is_established"] = int(row["days_since_release"] > 730)
+
+    # Standard rotation proximity (approximate: 2 years from release)
+    if row["is_standard_legal"]:
+        months_in_standard = row["months_since_release"]
+        months_until_rotation = max(0, config.STANDARD_ROTATION_MONTHS - months_in_standard)
+        row["months_until_rotation"] = months_until_rotation
+        row["rotation_proximity"] = 1.0 / max(months_until_rotation, 1)
+        row["is_rotation_imminent"] = int(months_until_rotation <= 6)
+    else:
+        row["months_until_rotation"] = 0
+        row["rotation_proximity"] = 0.0
+        row["is_rotation_imminent"] = 0
+
+    # New-set hype decay: cards lose "hype premium" over first ~6 months
+    row["hype_decay"] = max(0, 1.0 - (row["months_since_release"] / 6.0))
+
+    # Cross-section interaction: seasonality × demand
+    row["recency_x_rarity"] = row["hype_decay"] * rn
+    row["recency_x_competitive"] = row["hype_decay"] * competitive_legal
 
     return row
 
