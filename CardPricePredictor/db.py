@@ -5,6 +5,8 @@ Stores:
   • predictions       — every prediction with timestamp
   • price_snapshots   — periodic snapshots of all card prices
   • cards             — card metadata (name, set, rarity, mana cost, type, etc.)
+  • edhrec_ranks      — weekly EDHREC rank snapshots per card
+  • metagame_staples  — weekly MTGGoldfish format-staples snapshots
 
 Connection is via the DATABASE_URL in config.py (Neon serverless PostgreSQL).
 """
@@ -90,6 +92,36 @@ CREATE TABLE IF NOT EXISTS price_snapshots (
 CREATE INDEX IF NOT EXISTS idx_snap_card ON price_snapshots (card_name);
 CREATE INDEX IF NOT EXISTS idx_snap_date ON price_snapshots (snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_snap_card_date ON price_snapshots (card_name, snapshot_date);
+
+CREATE TABLE IF NOT EXISTS edhrec_ranks (
+    id              SERIAL PRIMARY KEY,
+    snapshot_date   DATE NOT NULL,
+    card_name       TEXT NOT NULL,
+    scryfall_id     TEXT,
+    edhrec_rank     INTEGER,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_edhrec_card ON edhrec_ranks (card_name);
+CREATE INDEX IF NOT EXISTS idx_edhrec_date ON edhrec_ranks (snapshot_date);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_edhrec_card_date
+    ON edhrec_ranks (card_name, snapshot_date);
+
+CREATE TABLE IF NOT EXISTS metagame_staples (
+    id              SERIAL PRIMARY KEY,
+    snapshot_date   DATE NOT NULL,
+    card_name       TEXT NOT NULL,
+    format          TEXT NOT NULL,
+    pct_of_decks    REAL,
+    avg_copies      REAL,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_meta_card   ON metagame_staples (card_name);
+CREATE INDEX IF NOT EXISTS idx_meta_date   ON metagame_staples (snapshot_date);
+CREATE INDEX IF NOT EXISTS idx_meta_fmt    ON metagame_staples (format);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_card_fmt_date
+    ON metagame_staples (card_name, format, snapshot_date);
 """
 
 
@@ -372,6 +404,157 @@ def get_snapshot_count() -> int:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# EDHREC RANKS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def upsert_edhrec_batch(cards: list[dict],
+                        snapshot_date: Optional[str] = None) -> int:
+    """
+    Bulk-upsert EDHREC rank data from Scryfall card dicts.
+
+    Only stores cards that *have* an edhrec_rank field.
+    Uses ON CONFLICT to update existing rows for the same (card_name, date).
+
+    Returns number of rows upserted.
+    """
+    snap_date = snapshot_date or datetime.now().strftime("%Y-%m-%d")
+    BATCH_SIZE = 500
+
+    upsert_sql = """
+        INSERT INTO edhrec_ranks
+           (snapshot_date, card_name, scryfall_id, edhrec_rank)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (card_name, snapshot_date) DO UPDATE SET
+            edhrec_rank = EXCLUDED.edhrec_rank,
+            scryfall_id = EXCLUDED.scryfall_id
+    """
+
+    rows = []
+    for card in cards:
+        rank = card.get("edhrec_rank")
+        if rank is None:
+            continue
+        rows.append((
+            snap_date,
+            card.get("name", ""),
+            card.get("id", ""),
+            int(rank),
+        ))
+
+    if not rows:
+        return 0
+
+    total = len(rows)
+    n = 0
+    conn = psycopg.connect(config.DATABASE_URL)
+    try:
+        with conn.cursor() as cur:
+            for start in range(0, total, BATCH_SIZE):
+                batch = rows[start : start + BATCH_SIZE]
+                cur.executemany(upsert_sql, batch)
+                conn.commit()
+                n += len(batch)
+                if n % 5000 < BATCH_SIZE or n == total:
+                    pct = n / total * 100
+                    print(f"  EDHREC ranks… {pct:5.1f}% ({n:,}/{total:,})", flush=True)
+    finally:
+        conn.close()
+    return n
+
+
+def get_edhrec_count() -> int:
+    """Return total rows in edhrec_ranks."""
+    with cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM edhrec_ranks")
+        return cur.fetchone()[0]
+
+
+def get_edhrec_dates() -> list[str]:
+    """Return sorted unique EDHREC snapshot dates."""
+    with cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT snapshot_date FROM edhrec_ranks ORDER BY snapshot_date"
+        )
+        return [str(row[0]) for row in cur.fetchall()]
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# METAGAME STAPLES
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def upsert_metagame_batch(metagame_data: dict[str, dict],
+                          snapshot_date: Optional[str] = None) -> int:
+    """
+    Bulk-upsert metagame staple data (from metagame_collector).
+
+    Parameters
+    ----------
+    metagame_data : dict as returned by fetch_metagame_data():
+        {"Card Name": {"modern": {"pct": 28.0, "copies": 3.8}, ...}, ...}
+    snapshot_date : ISO date string.  Default = today.
+
+    Returns
+    -------
+    Number of rows upserted.
+    """
+    snap_date = snapshot_date or datetime.now().strftime("%Y-%m-%d")
+    BATCH_SIZE = 500
+
+    upsert_sql = """
+        INSERT INTO metagame_staples
+           (snapshot_date, card_name, format, pct_of_decks, avg_copies)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (card_name, format, snapshot_date) DO UPDATE SET
+            pct_of_decks = EXCLUDED.pct_of_decks,
+            avg_copies   = EXCLUDED.avg_copies
+    """
+
+    rows = []
+    for card_name, formats in metagame_data.items():
+        for fmt, info in formats.items():
+            rows.append((
+                snap_date,
+                card_name,
+                fmt,
+                info.get("pct"),
+                info.get("copies"),
+            ))
+
+    if not rows:
+        return 0
+
+    total = len(rows)
+    n = 0
+    conn = psycopg.connect(config.DATABASE_URL)
+    try:
+        with conn.cursor() as cur:
+            for start in range(0, total, BATCH_SIZE):
+                batch = rows[start : start + BATCH_SIZE]
+                cur.executemany(upsert_sql, batch)
+                conn.commit()
+                n += len(batch)
+    finally:
+        conn.close()
+    return n
+
+
+def get_metagame_count() -> int:
+    """Return total rows in metagame_staples."""
+    with cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM metagame_staples")
+        return cur.fetchone()[0]
+
+
+def get_metagame_dates() -> list[str]:
+    """Return sorted unique metagame snapshot dates."""
+    with cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT snapshot_date FROM metagame_staples ORDER BY snapshot_date"
+        )
+        return [str(row[0]) for row in cur.fetchall()]
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # STATS / DISPLAY
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -384,6 +567,21 @@ def print_db_stats() -> None:
     dates = get_snapshot_dates()
     if dates:
         print(f"  Snapshot dates    : {len(dates)} ({dates[0]} → {dates[-1]})")
+
+    # EDHREC
+    edhrec_n = get_edhrec_count()
+    print(f"  EDHREC rank rows  : {edhrec_n:,}")
+    if edhrec_n:
+        ed = get_edhrec_dates()
+        print(f"  EDHREC dates      : {len(ed)} ({ed[0]} → {ed[-1]})")
+
+    # Metagame
+    meta_n = get_metagame_count()
+    print(f"  Metagame rows     : {meta_n:,}")
+    if meta_n:
+        md = get_metagame_dates()
+        print(f"  Metagame dates    : {len(md)} ({md[0]} → {md[-1]})")
+
     print()
 
 

@@ -7,7 +7,9 @@ or cron.  It:
   2. Refreshes MTGGoldfish metagame staples        (5 competitive formats)
   3. Takes a price snapshot                        (local CSV + Neon DB)
   4. Syncs card metadata to Neon DB
-  5. Retrains the model on the newest data          (optional, --retrain flag)
+  5. Syncs EDHREC ranks to Neon DB                 (weekly rank history)
+  6. Syncs metagame staples to Neon DB             (weekly metagame history)
+  7. Retrains the model on the newest data          (optional, --retrain flag)
 
 Exit codes:
   0 = success
@@ -50,10 +52,11 @@ logger.addHandler(console)
 
 def run(retrain: bool = False):
     exit_code = 0
-    total_steps = 5 if retrain else 4
+    total_steps = 7 if retrain else 6
     start = datetime.now()
     logger.info("=" * 50)
     logger.info(f"Weekly snapshot started (retrain={'yes' if retrain else 'no'})")
+    meta = None  # will hold metagame dict if step 2 succeeds
 
     # ── 1. Download fresh bulk data (Scryfall → Cardmarket EUR prices + EDHREC)
     step = 1
@@ -94,7 +97,7 @@ def run(retrain: bool = False):
     step = 4
     logger.info(f"Step {step}/{total_steps}: Syncing card metadata to Neon DB…")
     try:
-        from db import init_db, upsert_cards_batch
+        from db import init_db, upsert_cards_batch, upsert_edhrec_batch, upsert_metagame_batch
         init_db()
         n = upsert_cards_batch(cards)
         logger.info(f"  Synced {n:,} cards to Neon DB.")
@@ -103,9 +106,34 @@ def run(retrain: bool = False):
         if exit_code == 0:
             exit_code = 1
 
-    # ── 5. Retrain model (optional)
+    # ── 5. Sync EDHREC ranks to Neon DB
+    step = 5
+    logger.info(f"Step {step}/{total_steps}: Syncing EDHREC ranks to Neon DB…")
+    try:
+        n = upsert_edhrec_batch(cards)
+        logger.info(f"  EDHREC ranks synced: {n:,} cards with ranks.")
+    except Exception as e:
+        logger.error(f"  EDHREC sync failed: {e}")
+        if exit_code == 0:
+            exit_code = 1
+
+    # ── 6. Sync metagame staples to Neon DB
+    step = 6
+    logger.info(f"Step {step}/{total_steps}: Syncing metagame staples to Neon DB…")
+    if meta:
+        try:
+            n = upsert_metagame_batch(meta)
+            logger.info(f"  Metagame synced: {n:,} format-card rows.")
+        except Exception as e:
+            logger.error(f"  Metagame DB sync failed: {e}")
+            if exit_code == 0:
+                exit_code = 1
+    else:
+        logger.warning("  Skipped — no metagame data available (step 2 failed).")
+
+    # ── 7. Retrain model (optional)
     if retrain:
-        step = 5
+        step = 7
         logger.info(f"Step {step}/{total_steps}: Retraining model on fresh data…")
         try:
             from model import train as train_model
