@@ -20,3 +20,16 @@ env/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# CardPricePredictor generated data & models (too large for GitHub)
+CardPricePredictor/data/
+CardPricePredictor/models/
+CardPricePredictor/reports/
+CardPricePredictor/logs/
+
+# Neon / agent skill files
+.neon
+CardPricePredictor/.agents/
+CardPricePredictor/.claude/
+skills-lock.json
+CardPricePredictor/skills-lock.json
