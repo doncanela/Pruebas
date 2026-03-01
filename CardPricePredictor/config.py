@@ -20,6 +20,11 @@ MODEL_PATH = os.path.join(MODEL_DIR, "price_model.joblib")
 SCALER_PATH = os.path.join(MODEL_DIR, "scaler.joblib")
 FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "feature_columns.joblib")
 
+# Reserved List specialist model
+RL_MODEL_PATH = os.path.join(MODEL_DIR, "reserved_list_model.joblib")
+RL_SCALER_PATH = os.path.join(MODEL_DIR, "reserved_list_scaler.joblib")
+RL_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "reserved_list_feature_columns.joblib")
+
 # ─── Scryfall API ────────────────────────────────────────────────────────────
 SCRYFALL_BULK_URL = "https://api.scryfall.com/bulk-data"
 SCRYFALL_SEARCH_URL = "https://api.scryfall.com/cards/search"
@@ -107,6 +112,26 @@ XGBOOST_PARAMS = {
 
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
+
+# ─── Reserved List model hyper-parameters ─────────────────────────────────────
+# Smaller dataset (~870 cards) → shallower trees, more regularisation, no
+# outlier cap so the model can learn the full €0–€30k range.
+RL_XGBOOST_PARAMS = {
+    "n_estimators": 2000,
+    "max_depth": 5,
+    "learning_rate": 0.03,
+    "subsample": 0.80,
+    "colsample_bytree": 0.60,
+    "colsample_bylevel": 0.60,
+    "colsample_bynode": 0.80,
+    "reg_alpha": 3.0,
+    "reg_lambda": 8.0,
+    "min_child_weight": 5,
+    "gamma": 0.3,
+    "random_state": 42,
+    "early_stopping_rounds": 60,
+    "objective": "reg:squarederror",
+}
 
 # ─── Set types considered "premium" (higher expected prices) ─────────────────
 PREMIUM_SET_TYPES = {

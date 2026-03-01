@@ -11,6 +11,7 @@ This is the inference entry point — the model must have been trained first.
 """
 
 import json
+import os
 import time
 from typing import Optional, Union
 
@@ -59,8 +60,15 @@ def predict_card(
     row = _card_to_row(card_dict)
     row_df = pd.DataFrame([row])
 
-    # 3. Load model
-    model, scaler, feature_cols = load_model()
+    # 3. Load model — use Reserved List model if the card is on the RL
+    is_reserved = card_dict.get("reserved", False)
+    if is_reserved and os.path.exists(config.RL_MODEL_PATH):
+        from model import load_reserved_list_model
+        model, scaler, feature_cols = load_reserved_list_model()
+        model_used = "reserved_list"
+    else:
+        model, scaler, feature_cols = load_model()
+        model_used = "main"
 
     # Ensure columns match training order (fill missing with 0)
     for col in feature_cols:

@@ -6,7 +6,9 @@ This is a **cross-sectional price model**: it learns the relationship between ca
 
 Data is sourced from the **Scryfall API** (Cardmarket prices + card metadata) and **MTGGoldfish** (competitive metagame tournament data).
 
-**Current model**: 277 features · R² 0.54 · MAE €1.12 · SMAPE 46% · temporal split · zero leakage · trained on 77,000+ cards
+**Current model**: 279 features · R² 0.53 · MAE €1.13 · SMAPE 46% · temporal split · zero leakage · trained on 77,000+ cards
+
+**Two-model architecture**: Reserved List cards (869 cards, €0–€31K) are routed to a dedicated specialist model, while all other cards use the main model.
 
 ---
 
@@ -80,14 +82,13 @@ python main.py train --rebuild-features
 ```
 
 This will:
-- Engineer 277 features from the raw card data (zero leakage)
+- Engineer 279 features from the raw card data (zero leakage)
 - Enrich with MTGGoldfish metagame tournament usage data
-- Temporal train/test split (older sets → train, newer → test)
-- Train an XGBoost regressor with log-transformed prices and sample weights
-- Train an expensive-card specialist (two-stage model for cards ≥€20)
+- **Stage 1 — Main model**: Temporal train/test split, XGBoost with PseudoHuber loss, sample weights, expensive-card specialist (two-stage for cards ≥€20). Reserved List cards are excluded.
+- **Stage 2 — Reserved List model**: A dedicated XGBoost model trained only on ~869 RL cards with no outlier cap (handles €0–€31K), squared-error loss, and stronger regularisation for the small dataset.
 - Print evaluation metrics (MAE, MedAE, RMSE, R², MAPE, SMAPE), per-rarity and per-price-bracket breakdowns
 - Show top-25 feature importances
-- Save the model + specialist to `models/`
+- Save all models to `models/`
 
 ### 4. Predict a card's price
 
@@ -141,7 +142,19 @@ python main.py db-stats
 python main.py sync-db
 ```
 
-### 8. Status
+### 8. Batch predictions & report
+
+```bash
+# Predict all rare/mythic cards (~32,000) — auto-routes RL cards to specialist model
+python batch_predict_all.py
+# Output: output/rare_mythic_predictions.csv
+
+# Generate an 11-page PDF report of biggest price differences
+python generate_diff_report.py
+# Output: output/report/price_difference_report.pdf + individual PNGs
+```
+
+### 9. Status
 
 ```bash
 python main.py info
@@ -156,17 +169,20 @@ CardPricePredictor/
 ├── main.py                # CLI entry point (12 commands)
 ├── config.py              # Paths, API URLs, hyperparameters, constants
 ├── data_collector.py      # Scryfall API data fetching + reprint/metagame enrichment
-├── feature_engineer.py    # Raw JSON → 277 numeric features (leakage-free)
-├── model.py               # XGBoost training & evaluation
-├── predictor.py           # Single-card inference (auto-enriches with metagame)
+├── feature_engineer.py    # Raw JSON → 279 numeric features (leakage-free)
+├── model.py               # XGBoost training & evaluation (main + Reserved List models)
+├── predictor.py           # Single-card inference (auto-routes RL cards to specialist)
 ├── metagame_collector.py  # MTGGoldfish scraper (Standard/Pioneer/Modern/Legacy/Vintage)
 ├── price_history.py       # Prediction logging + price snapshots (local + DB)
 ├── db.py                  # Neon PostgreSQL integration (cards, predictions, snapshots)
-├── generate_report.py     # PDF validation report generator
+├── generate_report.py     # PDF validation report generator (sample-based)
+├── generate_diff_report.py # PDF report of biggest price differences (batch predictions)
+├── batch_predict_all.py   # Batch-predict all rare/mythic cards (routes RL automatically)
 ├── weekly_snapshot.py     # Automated weekly snapshot script
 ├── requirements.txt
 ├── data/                  # (auto-created) raw data, features CSV, metagame cache
 ├── models/                # (auto-created) trained model artifacts
+├── output/                # (auto-created) batch predictions CSV + visual report PDFs
 ├── reports/               # (auto-created) PDF reports
 └── logs/                  # (auto-created) automation logs
 ```
@@ -183,7 +199,9 @@ CardPricePredictor/
 
 4. **Feature engineering**: Each card is converted to 277 numeric features across 20 groups — from basic stats to metagame demand, supply scarcity, Reserved List status, ban impact, and seasonality signals. All features are audited for intra-snapshot leakage (no foil prices, no time-since-release). See the Temporal Caveats section for inter-snapshot considerations (EDHREC, metagame, reprint prices).
 
-5. **Model**: An XGBoost gradient-boosted tree regressor is trained on log-transformed prices with PseudoHuber loss function (robust to outliers). Sample weights boost rare/mythic and expensive cards. **Temporal train/test split** (train on older sets, test on newer) prevents era-mixing leakage. A **two-stage specialist** re-predicts expensive cards (≥€20) with a dedicated model blended 60/40 with the base predictions.
+5. **Model (two-model architecture)**:
+   - **Main model**: An XGBoost regressor trained on ~76,000 non-Reserved-List cards with log-transformed prices, PseudoHuber loss, sample weights, temporal split, and a two-stage expensive-card specialist (≥€20) blended 60/40.
+   - **Reserved List model**: A dedicated XGBoost regressor trained on ~869 RL cards with squared-error loss, no outlier cap (prices span €0.02–€31,000), stronger regularisation (depth 5, reg_alpha 3, reg_lambda 8), and heavier weighting on expensive cards. At inference, cards are automatically routed to the correct model based on the `reserved` flag.
 
 6. **Inference**: Given a card name, we fetch its data from Scryfall, enrich with reprint info and metagame data, engineer the same 277 features, and run the model. The prediction is automatically logged to both a local JSONL file and the Neon PostgreSQL database.
 
@@ -205,14 +223,14 @@ A workflow (`.github/workflows/weekly_snapshot.yml`) runs the same snapshot ever
 
 Evaluated on a **temporal test set** (most recent ~2.4 years of cards, trained on older sets). This is a harder, more honest evaluation than random splitting.
 
-### Base model
+### Main model (non-Reserved-List cards, ~76,258 cards)
 
 | Metric | Value |
 |---|---|
-| **MAE** | €1.12 |
+| **MAE** | €1.13 |
 | **Median AE** | €0.14 |
 | **RMSE** | €4.63 |
-| **R²** | 0.54 |
+| **R²** | 0.53 |
 | **MAPE (all ≥€0.05)** | 64.5% |
 | **MAPE (≥€1 only)** | 48.8% |
 | **SMAPE** | 46.1% |
@@ -255,8 +273,8 @@ For cards ≥€20, a specialist model trained on expensive cards only is blende
 
 | Metric | Value |
 |---|---|
-| Exact bracket match | 70.3% |
-| Within ±1 bracket | 94.0% |
+| Exact bracket match | 71.1% |
+| Within ±1 bracket | 94.2% |
 
 ### Within-X% accuracy (cards ≥€1, n=4,789)
 
@@ -267,7 +285,22 @@ For cards ≥€20, a specialist model trained on expensive cards only is blende
 | Within ±75% | 83.0% |
 | Within ±100% | 91.1% |
 
-> **Note on R²**: The previous R² of 0.71 was inflated by (a) random train/test split mixing eras, (b) foil-price features that leaked current market info, and (c) time-since-release features. The current R² of 0.54 on a strict temporal split with zero leakage is a far more honest measure of real-world prediction quality.
+### Reserved List specialist model (~869 cards)
+
+RL cards span €0.02–€30,975 and behave very differently from standard cards. A dedicated model with squared-error loss and stronger regularisation handles these:
+
+| Metric | Value |
+|---|---|
+| **MAE** | €56.57 |
+| **Median AE** | €1.43 |
+| **RMSE** | €604.49 |
+| **R²** | −2.24 |
+
+> **Why R² is negative**: With only 869 samples spanning 5 orders of magnitude and a strict temporal split, the model's squared-error predictions are worse than predicting the mean for the test fold. However, the model correctly captures pricing structure for high-value staples (e.g. Black Lotus predicted ~€17K vs old main model's €287). The negative R² reflects the extreme difficulty of the problem, not uselessness.
+
+**Top features**: `meta_legacy_unknown`, `is_expansion_set`, `century_plus_reprints`, `meta_vintage_unknown`, `edhrec_rank`
+
+> **Note on R²**: The previous R² of 0.71 was inflated by (a) random train/test split mixing eras, (b) foil-price features that leaked current market info, and (c) time-since-release features. The current R² of 0.53 on a strict temporal split with zero leakage is a far more honest measure of real-world prediction quality.
 
 ---
 
@@ -277,7 +310,7 @@ For cards ≥€20, a specialist model trained on expensive cards only is blende
 - **Rate limiting**: Scryfall requires 50–100 ms between requests; MTGGoldfish gets 1.5 s delays. Both are respected.
 - **Database**: Optional Neon PostgreSQL stores cards, predictions, and price snapshots for long-term tracking.
 - **Price target**: The model predicts `prices.eur` (Cardmarket Trend price at download time). This is a **cross-sectional** model, not a temporal forecast — see the Temporal Caveats section below.
-- **Reserved List**: Cards on the Reserved List are detected via Scryfall's `reserved` field — the model's #1 most important interaction feature.
+- **Reserved List**: Cards on the Reserved List (~869 printings) are detected via Scryfall's `reserved` field and routed to a dedicated specialist model. The main model no longer trains on RL cards, allowing each model to specialise in its price range (main: €0–€500, RL: €0–€31K).
 - **Metagame**: Tournament usage from MTGGoldfish covers the top-50 staples per format. Now includes **missingness flags** (`meta_{fmt}_unknown`) to distinguish "legal but not in data" from "not legal" — the model can learn that being legal-but-not-a-staple is different from being banned/illegal.
 
 ---

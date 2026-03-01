@@ -51,6 +51,13 @@ def train(
             raise ValueError("Provide either `cards` or `df`.")
         df = build_feature_dataframe(cards)
 
+    # ── Exclude Reserved List cards from the main model ──
+    if "is_reserved_list" in df.columns:
+        n_rl = (df["is_reserved_list"] == 1).sum()
+        df = df[df["is_reserved_list"] != 1].reset_index(drop=True)
+        print(f"Excluded {n_rl:,} Reserved-List cards (trained separately).")
+        print(f"Main model training set: {len(df):,} cards")
+
     feature_cols = get_feature_columns(df)
     X = df[feature_cols].copy()
     y = df["price_eur"].copy()
@@ -170,6 +177,109 @@ def load_model():
     scaler = joblib.load(config.SCALER_PATH)
     feature_cols = joblib.load(config.FEATURE_COLS_PATH)
     return model, scaler, feature_cols
+
+
+def load_reserved_list_model():
+    """Load the Reserved List specialist model, scaler, and feature columns."""
+    model = joblib.load(config.RL_MODEL_PATH)
+    scaler = joblib.load(config.RL_SCALER_PATH)
+    feature_cols = joblib.load(config.RL_FEATURE_COLS_PATH)
+    return model, scaler, feature_cols
+
+
+# ─── Reserved List model ────────────────────────────────────────────────────
+
+def train_reserved_list(
+    cards: Optional[list[dict]] = None,
+    df: Optional[pd.DataFrame] = None,
+) -> dict:
+    """
+    Train a dedicated model for Reserved List cards only.
+    These cards span €0.02–€30,000+ and are never reprinted, so they need
+    their own model with no outlier cap and tuned for small-N, wide-range data.
+    """
+    # 1. Build / filter to RL-only
+    if df is None:
+        if cards is None:
+            raise ValueError("Provide either `cards` or `df`.")
+        df = build_feature_dataframe(cards)
+
+    if "is_reserved_list" not in df.columns:
+        print("ERROR: 'is_reserved_list' column not found in features.")
+        return {}
+
+    df = df[df["is_reserved_list"] == 1].reset_index(drop=True)
+    print(f"\nReserved List model — {len(df):,} cards")
+
+    if len(df) < 50:
+        print("Not enough Reserved List cards to train. Skipping.")
+        return {}
+
+    feature_cols = get_feature_columns(df)
+    X = df[feature_cols].copy()
+    y = df["price_eur"].copy()
+    y_log = np.log1p(y)
+
+    # 2. Sample weights — boost expensive cards
+    weights = pd.Series(1.0, index=df.index)
+    expensive = y > 10.0
+    weights.loc[expensive] *= 3.0
+    very_expensive = y > 100.0
+    weights.loc[very_expensive] *= 2.0
+
+    # 3. Temporal split (or random if too few)
+    if "_days_since_release" in df.columns and len(df) >= 100:
+        sort_idx = df["_days_since_release"].values.argsort()[::-1]
+        n_train = int(len(sort_idx) * (1 - config.TEST_SIZE))
+        train_idx = sort_idx[:n_train]
+        test_idx = sort_idx[n_train:]
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_train, y_test = y_log.iloc[train_idx], y_log.iloc[test_idx]
+        w_train = weights.iloc[train_idx]
+        print(f"  Temporal split: train {len(X_train):,}  test {len(X_test):,}")
+    else:
+        from sklearn.model_selection import train_test_split as _tts
+        X_train, X_test, y_train, y_test, w_train, _ = _tts(
+            X, y_log, weights, test_size=config.TEST_SIZE,
+            random_state=config.RANDOM_STATE,
+        )
+        print(f"  Random split: train {len(X_train):,}  test {len(X_test):,}")
+
+    # 4. Scale
+    scaler = StandardScaler()
+    X_train_sc = scaler.fit_transform(X_train)
+    X_test_sc = scaler.transform(X_test)
+
+    # 5. Train
+    print("\n  Training Reserved List XGBoost …")
+    model = XGBRegressor(**config.RL_XGBOOST_PARAMS)
+    model.fit(
+        X_train_sc, y_train,
+        sample_weight=w_train.values,
+        eval_set=[(X_test_sc, y_test)],
+        verbose=50,
+    )
+    best = getattr(model, "best_iteration", config.RL_XGBOOST_PARAMS["n_estimators"])
+    print(f"  Best iteration: {best}")
+
+    # 6. Evaluate
+    y_pred_log = model.predict(X_test_sc)
+    y_pred = np.expm1(y_pred_log)
+    y_actual = np.expm1(y_test)
+
+    metrics = _evaluate(y_actual, y_pred)
+    print("\n  ── Reserved List Model Evaluation ──")
+    _print_metrics(metrics)
+    _price_bracket_breakdown(y_actual, y_pred)
+    _print_feature_importance(model, feature_cols, top_n=20)
+
+    # 7. Save
+    joblib.dump(model, config.RL_MODEL_PATH)
+    joblib.dump(scaler, config.RL_SCALER_PATH)
+    joblib.dump(feature_cols, config.RL_FEATURE_COLS_PATH)
+    print(f"  Reserved List model saved to {config.RL_MODEL_PATH}")
+
+    return metrics
 
 
 # ─── Two-stage model ────────────────────────────────────────────────────────

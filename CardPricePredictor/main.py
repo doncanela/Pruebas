@@ -60,7 +60,7 @@ def cmd_collect(args):
 
 def cmd_train(args):
     """Feature-engineer and train the model."""
-    from model import train as train_model
+    from model import train as train_model, train_reserved_list
     import pandas as pd
 
     print("=" * 60)
@@ -70,16 +70,28 @@ def cmd_train(args):
     if os.path.exists(config.FEATURES_PATH) and not args.rebuild_features:
         print(f"Loading pre-built features from {config.FEATURES_PATH}")
         df = pd.read_csv(config.FEATURES_PATH)
-        train_model(df=df)
     elif os.path.exists(config.RAW_DATA_PATH):
         print("Building features from raw card data …")
         with open(config.RAW_DATA_PATH, "r", encoding="utf-8") as f:
             cards = json.load(f)
-        train_model(cards=cards)
+        from feature_engineer import build_feature_dataframe
+        df = build_feature_dataframe(cards)
     else:
         print("ERROR: No data found. Run 'collect' first.")
         print(f"  Expected: {config.RAW_DATA_PATH}")
         sys.exit(1)
+
+    # Train main model (automatically excludes Reserved List cards)
+    print("\n" + "─" * 60)
+    print("  STAGE 1: Main model (non-Reserved List)")
+    print("─" * 60)
+    train_model(df=df)
+
+    # Train Reserved List specialist model
+    print("\n" + "─" * 60)
+    print("  STAGE 2: Reserved List specialist model")
+    print("─" * 60)
+    train_reserved_list(df=df)
 
 
 def cmd_predict(args):

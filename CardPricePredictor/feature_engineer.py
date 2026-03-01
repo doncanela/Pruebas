@@ -68,12 +68,18 @@ def build_feature_dataframe(cards: list[dict]) -> pd.DataFrame:
         df.loc[~known_mask, "edhrec_rank"] = median_rank
         print(f"EDHREC rank: imputed {(~known_mask).sum():,} missing → median {median_rank:.0f}")
 
-    # Filter out extreme outliers (price > €500) to reduce noise
+    # Filter out extreme outliers (price > €500) for NON-Reserved-List cards.
+    # Reserved List cards can legitimately reach €30,000+ and are kept for
+    # the dedicated RL model.
     n_before = len(df)
-    df = df[df["price_eur"] <= 500]
+    if "is_reserved_list" in df.columns:
+        drop_mask = (df["price_eur"] > 500) & (df["is_reserved_list"] != 1)
+    else:
+        drop_mask = df["price_eur"] > 500
+    df = df[~drop_mask]
     n_dropped = n_before - len(df)
     if n_dropped > 0:
-        print(f"Dropped {n_dropped} cards with price > €500 (outliers)")
+        print(f"Dropped {n_dropped} non-RL cards with price > €500 (outliers)")
 
     df = df.reset_index(drop=True)
 
