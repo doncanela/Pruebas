@@ -33,6 +33,73 @@ LASSO_RL_MODEL_PATH = os.path.join(MODEL_DIR, "lasso_reserved_list_model.joblib"
 LASSO_RL_SCALER_PATH = os.path.join(MODEL_DIR, "lasso_reserved_list_scaler.joblib")
 LASSO_RL_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "lasso_reserved_list_feature_columns.joblib")
 
+# Random Forest model
+RF_MODEL_PATH = os.path.join(MODEL_DIR, "rf_model.joblib")
+RF_SCALER_PATH = os.path.join(MODEL_DIR, "rf_scaler.joblib")
+RF_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "rf_feature_columns.joblib")
+RF_RL_MODEL_PATH = os.path.join(MODEL_DIR, "rf_reserved_list_model.joblib")
+RF_RL_SCALER_PATH = os.path.join(MODEL_DIR, "rf_reserved_list_scaler.joblib")
+RF_RL_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "rf_reserved_list_feature_columns.joblib")
+
+# TabNet model
+TABNET_MODEL_DIR = os.path.join(MODEL_DIR, "tabnet")
+TABNET_RL_MODEL_DIR = os.path.join(MODEL_DIR, "tabnet_rl")
+TABNET_SCALER_PATH = os.path.join(MODEL_DIR, "tabnet_scaler.joblib")
+TABNET_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "tabnet_feature_columns.joblib")
+TABNET_RL_SCALER_PATH = os.path.join(MODEL_DIR, "tabnet_rl_scaler.joblib")
+TABNET_RL_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "tabnet_rl_feature_columns.joblib")
+
+# Elastic Net model (TF-IDF text baseline)
+ELASTICNET_MODEL_PATH = os.path.join(MODEL_DIR, "elasticnet_model.joblib")
+ELASTICNET_SCALER_PATH = os.path.join(MODEL_DIR, "elasticnet_scaler.joblib")
+ELASTICNET_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "elasticnet_feature_columns.joblib")
+ELASTICNET_TFIDF_PATH = os.path.join(MODEL_DIR, "elasticnet_tfidf.joblib")
+ELASTICNET_RL_MODEL_PATH = os.path.join(MODEL_DIR, "elasticnet_rl_model.joblib")
+ELASTICNET_RL_SCALER_PATH = os.path.join(MODEL_DIR, "elasticnet_rl_scaler.joblib")
+ELASTICNET_RL_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "elasticnet_rl_feature_columns.joblib")
+ELASTICNET_RL_TFIDF_PATH = os.path.join(MODEL_DIR, "elasticnet_rl_tfidf.joblib")
+
+# LightGBM model
+LGBM_MODEL_PATH = os.path.join(MODEL_DIR, "lgbm_model.joblib")
+LGBM_SCALER_PATH = os.path.join(MODEL_DIR, "lgbm_scaler.joblib")
+LGBM_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "lgbm_feature_columns.joblib")
+LGBM_RL_MODEL_PATH = os.path.join(MODEL_DIR, "lgbm_rl_model.joblib")
+LGBM_RL_SCALER_PATH = os.path.join(MODEL_DIR, "lgbm_rl_scaler.joblib")
+LGBM_RL_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "lgbm_rl_feature_columns.joblib")
+
+# CatBoost model
+CATBOOST_MODEL_PATH = os.path.join(MODEL_DIR, "catboost_model.cbm")
+CATBOOST_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "catboost_feature_columns.joblib")
+CATBOOST_RL_MODEL_PATH = os.path.join(MODEL_DIR, "catboost_rl_model.cbm")
+CATBOOST_RL_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "catboost_rl_feature_columns.joblib")
+
+# Two-stage bulk/non-bulk model
+TWOSTAGE_CLASSIFIER_PATH = os.path.join(MODEL_DIR, "twostage_classifier.joblib")
+TWOSTAGE_REGRESSOR_PATH = os.path.join(MODEL_DIR, "twostage_regressor.joblib")
+TWOSTAGE_SCALER_PATH = os.path.join(MODEL_DIR, "twostage_scaler.joblib")
+TWOSTAGE_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "twostage_feature_columns.joblib")
+TWOSTAGE_RL_CLASSIFIER_PATH = os.path.join(MODEL_DIR, "twostage_rl_classifier.joblib")
+TWOSTAGE_RL_REGRESSOR_PATH = os.path.join(MODEL_DIR, "twostage_rl_regressor.joblib")
+TWOSTAGE_RL_SCALER_PATH = os.path.join(MODEL_DIR, "twostage_rl_scaler.joblib")
+TWOSTAGE_RL_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "twostage_rl_feature_columns.joblib")
+TWOSTAGE_BULK_THRESHOLD = 0.50  # € — bulk vs non-bulk boundary
+
+# Quantile regression model (LightGBM quantile)
+QUANTILE_MODEL_P10_PATH = os.path.join(MODEL_DIR, "quantile_p10.joblib")
+QUANTILE_MODEL_P50_PATH = os.path.join(MODEL_DIR, "quantile_p50.joblib")
+QUANTILE_MODEL_P90_PATH = os.path.join(MODEL_DIR, "quantile_p90.joblib")
+QUANTILE_SCALER_PATH = os.path.join(MODEL_DIR, "quantile_scaler.joblib")
+QUANTILE_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "quantile_feature_columns.joblib")
+QUANTILE_RL_MODEL_P10_PATH = os.path.join(MODEL_DIR, "quantile_rl_p10.joblib")
+QUANTILE_RL_MODEL_P50_PATH = os.path.join(MODEL_DIR, "quantile_rl_p50.joblib")
+QUANTILE_RL_MODEL_P90_PATH = os.path.join(MODEL_DIR, "quantile_rl_p90.joblib")
+QUANTILE_RL_SCALER_PATH = os.path.join(MODEL_DIR, "quantile_rl_scaler.joblib")
+QUANTILE_RL_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "quantile_rl_feature_columns.joblib")
+
+# TF-IDF + SVD text pipeline (shared by all models)
+TFIDF_SVD_PATH = os.path.join(MODEL_DIR, "tfidf_svd_pipeline.joblib")
+TFIDF_N_COMPONENTS = 50  # number of SVD dimensions
+
 # ─── Scryfall API ────────────────────────────────────────────────────────────
 SCRYFALL_BULK_URL = "https://api.scryfall.com/bulk-data"
 SCRYFALL_SEARCH_URL = "https://api.scryfall.com/cards/search"
@@ -69,7 +136,7 @@ TRACKED_KEYWORDS = [
     "Miracle", "Mutate", "Morph", "Megamorph", "Disguise",
     "Ninjutsu", "Prowl", "Surge", "Blitz", "Plot",
     "Craft", "Channel", "Suspend", "Bestow", "Encore",
-    "Offering", "Aftermath",
+    "Offering", "Aftermath", "Transmute", "Split second",
 ]
 
 # ─── Alternative / substitutive cost keywords ────────────────────────────────
@@ -82,6 +149,7 @@ ALT_COST_KEYWORDS = {
     "Plot", "Craft", "Channel", "Suspend", "Bestow",
     "Encore", "Offering", "Aftermath",
     "Flashback", "Retrace", "Escape", "Foretell", "Disturb",
+    "Transmute",
 }
 
 # Rarities
@@ -153,6 +221,137 @@ LASSO_PARAMS = {
     "n_jobs": -1,            # use all cores for CV
 }
 
+# ─── Random Forest hyper-parameters ──────────────────────────────────────────
+RF_PARAMS = {
+    "n_estimators": 1000,
+    "max_depth": 20,
+    "min_samples_split": 5,
+    "min_samples_leaf": 2,
+    "max_features": 0.5,
+    "n_jobs": -1,
+    "random_state": 42,
+}
+
+RF_RL_PARAMS = {
+    "n_estimators": 500,
+    "max_depth": 12,
+    "min_samples_split": 5,
+    "min_samples_leaf": 3,
+    "max_features": 0.6,
+    "n_jobs": -1,
+    "random_state": 42,
+}
+
+# ─── TabNet hyper-parameters ─────────────────────────────────────────────────
+TABNET_PARAMS = {
+    "n_d": 32,               # width of decision prediction layer
+    "n_a": 32,               # width of attention embedding layer
+    "n_steps": 5,            # number of sequential attention steps
+    "gamma": 1.5,            # coefficient for feature reusage in attention
+    "n_independent": 2,      # number of independent GLU layers
+    "n_shared": 2,           # number of shared GLU layers
+    "lambda_sparse": 1e-3,   # sparsity regularisation
+    "momentum": 0.3,
+    "mask_type": "entmax",
+}
+
+TABNET_FIT_PARAMS = {
+    "max_epochs": 200,
+    "patience": 30,           # early stopping patience
+    "batch_size": 2048,
+    "virtual_batch_size": 256,
+}
+
+TABNET_RL_PARAMS = {
+    "n_d": 16,
+    "n_a": 16,
+    "n_steps": 3,
+    "gamma": 1.5,
+    "n_independent": 1,
+    "n_shared": 1,
+    "lambda_sparse": 1e-2,
+    "momentum": 0.3,
+    "mask_type": "entmax",
+}
+
+TABNET_RL_FIT_PARAMS = {
+    "max_epochs": 300,
+    "patience": 40,
+    "batch_size": 128,
+    "virtual_batch_size": 64,
+}
+
+# ─── Elastic Net hyper-parameters ────────────────────────────────────────────
+ELASTICNET_PARAMS = {
+    "l1_ratio": [0.1, 0.3, 0.5, 0.7, 0.9],  # mix L1 / L2
+    "cv": 5,
+    "max_iter": 20_000,
+    "tol": 1e-4,
+    "random_state": 42,
+    "n_jobs": -1,
+}
+
+# ─── LightGBM hyper-parameters ──────────────────────────────────────────────
+LGBM_PARAMS = {
+    "n_estimators": 3000,
+    "max_depth": 8,
+    "learning_rate": 0.03,
+    "num_leaves": 127,
+    "subsample": 0.75,
+    "colsample_bytree": 0.65,
+    "reg_alpha": 1.0,
+    "reg_lambda": 3.0,
+    "min_child_samples": 20,
+    "random_state": 42,
+    "n_jobs": -1,
+    "verbose": -1,
+    "objective": "huber",
+}
+
+LGBM_RL_PARAMS = {
+    "n_estimators": 2000,
+    "max_depth": 5,
+    "learning_rate": 0.03,
+    "num_leaves": 31,
+    "subsample": 0.80,
+    "colsample_bytree": 0.60,
+    "reg_alpha": 3.0,
+    "reg_lambda": 8.0,
+    "min_child_samples": 5,
+    "random_state": 42,
+    "n_jobs": -1,
+    "verbose": -1,
+    "objective": "regression",
+}
+
+# ─── CatBoost hyper-parameters ──────────────────────────────────────────────
+CATBOOST_PARAMS = {
+    "iterations": 3000,
+    "depth": 8,
+    "learning_rate": 0.03,
+    "l2_leaf_reg": 3.0,
+    "random_seed": 42,
+    "verbose": 200,
+    "loss_function": "RMSE",
+    "early_stopping_rounds": 80,
+}
+
+CATBOOST_RL_PARAMS = {
+    "iterations": 2000,
+    "depth": 5,
+    "learning_rate": 0.03,
+    "l2_leaf_reg": 8.0,
+    "random_seed": 42,
+    "verbose": 100,
+    "loss_function": "RMSE",
+    "early_stopping_rounds": 60,
+}
+
+# CatBoost categorical columns (these start with _cat_ in the feature matrix)
+CATBOOST_CAT_FEATURES = [
+    "_cat_rarity", "_cat_color_identity", "_cat_type_bucket",
+]
+
 # ─── Set types considered "premium" (higher expected prices) ─────────────────
 PREMIUM_SET_TYPES = {
     "masters", "masterpiece", "from_the_vault", "premium_deck",
@@ -181,7 +380,9 @@ SET_ERA_BOUNDARIES = {
 # ─── Secret Lair / Universes Beyond set types or codes ──────────────────────
 SECRET_LAIR_SET_TYPES = {"box", "funny"}  # Scryfall uses various types
 UNIVERSES_BEYOND_MARKERS = {
-    "who", "ltr", "ltc", "40k", "pip", "acr",  # known UB set codes
+    "who", "ltr", "ltc", "40k", "pip", "acr",    # known UB set codes
+    "scd", "rex", "fin", "spg",                    # Final Fantasy, Jurassic World, etc.
+    "pltr", "p40k",                                  # promo variants
 }
 
 # ─── Standard rotation year-set mapping ─────────────────────────────────────

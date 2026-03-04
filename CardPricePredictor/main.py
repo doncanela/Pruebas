@@ -145,19 +145,373 @@ def cmd_predict_lasso(args):
     predict_card_lasso(card_name=args.name, set_code=args.set)
 
 
-def cmd_predict(args):
-    """Predict price for a single card."""
-    from predictor import predict_card
+def cmd_train_rf(args):
+    """Feature-engineer and train the Random Forest model."""
+    from model_rf import train_rf, train_rf_reserved_list
+    import pandas as pd
 
     print("=" * 60)
-    print("  MTG Card Price Predictor — Prediction")
+    print("  MTG Card Price Predictor — Random Forest Training")
     print("=" * 60)
 
-    if not os.path.exists(config.MODEL_PATH):
-        print("ERROR: No trained model found. Run 'train' first.")
+    if os.path.exists(config.FEATURES_PATH) and not args.rebuild_features:
+        print(f"Loading pre-built features from {config.FEATURES_PATH}")
+        df = pd.read_csv(config.FEATURES_PATH)
+    elif os.path.exists(config.RAW_DATA_PATH):
+        print("Building features from raw card data …")
+        with open(config.RAW_DATA_PATH, "r", encoding="utf-8") as f:
+            cards = json.load(f)
+        from feature_engineer import build_feature_dataframe
+        df = build_feature_dataframe(cards)
+    else:
+        print("ERROR: No data found. Run 'collect' first.")
         sys.exit(1)
 
-    predict_card(card_name=args.name, set_code=args.set)
+    print("\n" + "─" * 60)
+    print("  STAGE 1: Random Forest main model (non-Reserved List)")
+    print("─" * 60)
+    train_rf(df=df)
+
+    print("\n" + "─" * 60)
+    print("  STAGE 2: Random Forest Reserved List specialist model")
+    print("─" * 60)
+    train_rf_reserved_list(df=df)
+
+
+def cmd_predict_rf(args):
+    """Predict price for a single card using Random Forest."""
+    from predictor import predict_card_rf
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — Random Forest Prediction")
+    print("=" * 60)
+
+    if not os.path.exists(config.RF_MODEL_PATH):
+        print("ERROR: No trained RF model found. Run 'train-rf' first.")
+        sys.exit(1)
+
+    predict_card_rf(card_name=args.name, set_code=args.set)
+
+
+def cmd_train_tabnet(args):
+    """Feature-engineer and train the TabNet model."""
+    from model_tabnet import train_tabnet, train_tabnet_reserved_list
+    import pandas as pd
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — TabNet Training")
+    print("=" * 60)
+
+    if os.path.exists(config.FEATURES_PATH) and not args.rebuild_features:
+        print(f"Loading pre-built features from {config.FEATURES_PATH}")
+        df = pd.read_csv(config.FEATURES_PATH)
+    elif os.path.exists(config.RAW_DATA_PATH):
+        print("Building features from raw card data …")
+        with open(config.RAW_DATA_PATH, "r", encoding="utf-8") as f:
+            cards = json.load(f)
+        from feature_engineer import build_feature_dataframe
+        df = build_feature_dataframe(cards)
+    else:
+        print("ERROR: No data found. Run 'collect' first.")
+        sys.exit(1)
+
+    print("\n" + "─" * 60)
+    print("  STAGE 1: TabNet main model (non-Reserved List)")
+    print("─" * 60)
+    train_tabnet(df=df)
+
+    print("\n" + "─" * 60)
+    print("  STAGE 2: TabNet Reserved List specialist model")
+    print("─" * 60)
+    train_tabnet_reserved_list(df=df)
+
+
+def cmd_predict_tabnet(args):
+    """Predict price for a single card using TabNet."""
+    from predictor import predict_card_tabnet
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — TabNet Prediction")
+    print("=" * 60)
+
+    if not os.path.exists(config.TABNET_MODEL_DIR):
+        print("ERROR: No trained TabNet model found. Run 'train-tabnet' first.")
+        sys.exit(1)
+
+    predict_card_tabnet(card_name=args.name, set_code=args.set)
+
+
+# ─── Elastic Net ─────────────────────────────────────────────────────────────
+
+def cmd_train_elasticnet(args):
+    """Feature-engineer and train the Elastic Net (TF-IDF) model."""
+    from model_elasticnet import train_elasticnet, train_elasticnet_reserved_list
+    import pandas as pd
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — Elastic Net Training")
+    print("=" * 60)
+
+    if os.path.exists(config.FEATURES_PATH) and not args.rebuild_features:
+        print(f"Loading pre-built features from {config.FEATURES_PATH}")
+        df = pd.read_csv(config.FEATURES_PATH)
+    elif os.path.exists(config.RAW_DATA_PATH):
+        print("Building features from raw card data …")
+        with open(config.RAW_DATA_PATH, "r", encoding="utf-8") as f:
+            cards = json.load(f)
+        from feature_engineer import build_feature_dataframe
+        df = build_feature_dataframe(cards)
+    else:
+        print("ERROR: No data found. Run 'collect' first.")
+        sys.exit(1)
+
+    print("\n" + "─" * 60)
+    print("  STAGE 1: Elastic Net main model (non-Reserved List)")
+    print("─" * 60)
+    train_elasticnet(df=df)
+
+    print("\n" + "─" * 60)
+    print("  STAGE 2: Elastic Net Reserved List specialist model")
+    print("─" * 60)
+    train_elasticnet_reserved_list(df=df)
+
+
+def cmd_predict_elasticnet(args):
+    """Predict price using Elastic Net."""
+    from predictor import predict_card_elasticnet
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — Elastic Net Prediction")
+    print("=" * 60)
+
+    if not os.path.exists(config.ELASTICNET_MODEL_PATH):
+        print("ERROR: No trained Elastic Net model. Run 'train-elasticnet' first.")
+        sys.exit(1)
+
+    predict_card_elasticnet(card_name=args.name, set_code=args.set)
+
+
+# ─── LightGBM ───────────────────────────────────────────────────────────────
+
+def cmd_train_lgbm(args):
+    """Feature-engineer and train the LightGBM model."""
+    from model_lgbm import train_lgbm, train_lgbm_reserved_list
+    import pandas as pd
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — LightGBM Training")
+    print("=" * 60)
+
+    if os.path.exists(config.FEATURES_PATH) and not args.rebuild_features:
+        print(f"Loading pre-built features from {config.FEATURES_PATH}")
+        df = pd.read_csv(config.FEATURES_PATH)
+    elif os.path.exists(config.RAW_DATA_PATH):
+        print("Building features from raw card data …")
+        with open(config.RAW_DATA_PATH, "r", encoding="utf-8") as f:
+            cards = json.load(f)
+        from feature_engineer import build_feature_dataframe
+        df = build_feature_dataframe(cards)
+    else:
+        print("ERROR: No data found. Run 'collect' first.")
+        sys.exit(1)
+
+    print("\n" + "─" * 60)
+    print("  STAGE 1: LightGBM main model (non-Reserved List)")
+    print("─" * 60)
+    train_lgbm(df=df)
+
+    print("\n" + "─" * 60)
+    print("  STAGE 2: LightGBM Reserved List specialist model")
+    print("─" * 60)
+    train_lgbm_reserved_list(df=df)
+
+
+def cmd_predict_lgbm(args):
+    """Predict price using LightGBM."""
+    from predictor import predict_card_lgbm
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — LightGBM Prediction")
+    print("=" * 60)
+
+    if not os.path.exists(config.LGBM_MODEL_PATH):
+        print("ERROR: No trained LightGBM model. Run 'train-lgbm' first.")
+        sys.exit(1)
+
+    predict_card_lgbm(card_name=args.name, set_code=args.set)
+
+
+# ─── CatBoost ───────────────────────────────────────────────────────────────
+
+def cmd_train_catboost(args):
+    """Feature-engineer and train the CatBoost model."""
+    from model_catboost import train_catboost, train_catboost_reserved_list
+    import pandas as pd
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — CatBoost Training")
+    print("=" * 60)
+
+    if os.path.exists(config.FEATURES_PATH) and not args.rebuild_features:
+        print(f"Loading pre-built features from {config.FEATURES_PATH}")
+        df = pd.read_csv(config.FEATURES_PATH)
+    elif os.path.exists(config.RAW_DATA_PATH):
+        print("Building features from raw card data …")
+        with open(config.RAW_DATA_PATH, "r", encoding="utf-8") as f:
+            cards = json.load(f)
+        from feature_engineer import build_feature_dataframe
+        df = build_feature_dataframe(cards)
+    else:
+        print("ERROR: No data found. Run 'collect' first.")
+        sys.exit(1)
+
+    print("\n" + "─" * 60)
+    print("  STAGE 1: CatBoost main model (non-Reserved List)")
+    print("─" * 60)
+    train_catboost(df=df)
+
+    print("\n" + "─" * 60)
+    print("  STAGE 2: CatBoost Reserved List specialist model")
+    print("─" * 60)
+    train_catboost_reserved_list(df=df)
+
+
+def cmd_predict_catboost(args):
+    """Predict price using CatBoost."""
+    from predictor import predict_card_catboost
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — CatBoost Prediction")
+    print("=" * 60)
+
+    if not os.path.exists(config.CATBOOST_MODEL_PATH):
+        print("ERROR: No trained CatBoost model. Run 'train-catboost' first.")
+        sys.exit(1)
+
+    predict_card_catboost(card_name=args.name, set_code=args.set)
+
+
+# ─── Two-Stage ───────────────────────────────────────────────────────────────
+
+def cmd_train_twostage(args):
+    """Feature-engineer and train the Two-Stage bulk/non-bulk model."""
+    from model_twostage import train_twostage, train_twostage_reserved_list
+    import pandas as pd
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — Two-Stage Training")
+    print("=" * 60)
+
+    if os.path.exists(config.FEATURES_PATH) and not args.rebuild_features:
+        print(f"Loading pre-built features from {config.FEATURES_PATH}")
+        df = pd.read_csv(config.FEATURES_PATH)
+    elif os.path.exists(config.RAW_DATA_PATH):
+        print("Building features from raw card data …")
+        with open(config.RAW_DATA_PATH, "r", encoding="utf-8") as f:
+            cards = json.load(f)
+        from feature_engineer import build_feature_dataframe
+        df = build_feature_dataframe(cards)
+    else:
+        print("ERROR: No data found. Run 'collect' first.")
+        sys.exit(1)
+
+    print("\n" + "─" * 60)
+    print("  STAGE 1: Two-Stage main model (non-Reserved List)")
+    print("─" * 60)
+    train_twostage(df=df)
+
+    print("\n" + "─" * 60)
+    print("  STAGE 2: Two-Stage Reserved List specialist model")
+    print("─" * 60)
+    train_twostage_reserved_list(df=df)
+
+
+def cmd_predict_twostage(args):
+    """Predict price using the Two-Stage model."""
+    from predictor import predict_card_twostage
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — Two-Stage Prediction")
+    print("=" * 60)
+
+    if not os.path.exists(config.TWOSTAGE_CLASSIFIER_PATH):
+        print("ERROR: No trained Two-Stage model. Run 'train-twostage' first.")
+        sys.exit(1)
+
+    predict_card_twostage(card_name=args.name, set_code=args.set)
+
+
+# ─── Quantile ────────────────────────────────────────────────────────────────
+
+def cmd_train_quantile(args):
+    """Feature-engineer and train the Quantile regression model (P10/P50/P90)."""
+    from model_quantile import train_quantile, train_quantile_reserved_list
+    import pandas as pd
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — Quantile Model Training")
+    print("=" * 60)
+
+    if os.path.exists(config.FEATURES_PATH) and not args.rebuild_features:
+        print(f"Loading pre-built features from {config.FEATURES_PATH}")
+        df = pd.read_csv(config.FEATURES_PATH)
+    elif os.path.exists(config.RAW_DATA_PATH):
+        print("Building features from raw card data …")
+        with open(config.RAW_DATA_PATH, "r", encoding="utf-8") as f:
+            cards = json.load(f)
+        from feature_engineer import build_feature_dataframe
+        df = build_feature_dataframe(cards)
+    else:
+        print("ERROR: No data found. Run 'collect' first.")
+        sys.exit(1)
+
+    print("\n" + "─" * 60)
+    print("  STAGE 1: Quantile main model (non-Reserved List)")
+    print("─" * 60)
+    train_quantile(df=df)
+
+    print("\n" + "─" * 60)
+    print("  STAGE 2: Quantile Reserved List specialist model")
+    print("─" * 60)
+    train_quantile_reserved_list(df=df)
+
+
+def cmd_predict_quantile(args):
+    """Predict price range using Quantile regression."""
+    from predictor import predict_card_quantile
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — Quantile Prediction")
+    print("=" * 60)
+
+    if not os.path.exists(config.QUANTILE_MODEL_P50_PATH):
+        print("ERROR: No trained Quantile model. Run 'train-quantile' first.")
+        sys.exit(1)
+
+    predict_card_quantile(card_name=args.name, set_code=args.set)
+
+
+def cmd_predict(args):
+    """Predict price for a single card using ALL available models."""
+    from predictor import predict_card_all
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — All-Model Prediction")
+    print("=" * 60)
+
+    # Check that at least one model exists
+    any_model = any(os.path.exists(p) for p in [
+        config.MODEL_PATH, config.RF_MODEL_PATH,
+        config.TABNET_MODEL_DIR, config.LASSO_MODEL_PATH,
+        config.ELASTICNET_MODEL_PATH, config.LGBM_MODEL_PATH,
+        config.CATBOOST_MODEL_PATH, config.TWOSTAGE_CLASSIFIER_PATH,
+        config.QUANTILE_MODEL_P50_PATH,
+    ])
+    if not any_model:
+        print("ERROR: No trained models found. Run a train command first.")
+        sys.exit(1)
+
+    predict_card_all(card_name=args.name, set_code=args.set)
 
 
 def cmd_batch(args):
@@ -416,6 +770,83 @@ def main():
     p_pred_lasso.add_argument("--set", type=str, default=None, help="3-letter set code")
     p_pred_lasso.set_defaults(func=cmd_predict_lasso)
 
+    # ── train-rf ──
+    p_train_rf = sub.add_parser("train-rf", help="Build features & train the Random Forest model")
+    p_train_rf.add_argument("--rebuild-features", action="store_true")
+    p_train_rf.set_defaults(func=cmd_train_rf)
+
+    # ── predict-rf ──
+    p_pred_rf = sub.add_parser("predict-rf", help="Predict a card's price using Random Forest")
+    p_pred_rf.add_argument("name", type=str, help="Card name (English)")
+    p_pred_rf.add_argument("--set", type=str, default=None, help="3-letter set code")
+    p_pred_rf.set_defaults(func=cmd_predict_rf)
+
+    # ── train-tabnet ──
+    p_train_tabnet = sub.add_parser("train-tabnet", help="Build features & train the TabNet model")
+    p_train_tabnet.add_argument("--rebuild-features", action="store_true")
+    p_train_tabnet.set_defaults(func=cmd_train_tabnet)
+
+    # ── predict-tabnet ──
+    p_pred_tabnet = sub.add_parser("predict-tabnet", help="Predict a card's price using TabNet")
+    p_pred_tabnet.add_argument("name", type=str, help="Card name (English)")
+    p_pred_tabnet.add_argument("--set", type=str, default=None, help="3-letter set code")
+    p_pred_tabnet.set_defaults(func=cmd_predict_tabnet)
+
+    # ── train-elasticnet ──
+    p_train_en = sub.add_parser("train-elasticnet", help="Build features & train the Elastic Net model")
+    p_train_en.add_argument("--rebuild-features", action="store_true")
+    p_train_en.set_defaults(func=cmd_train_elasticnet)
+
+    # ── predict-elasticnet ──
+    p_pred_en = sub.add_parser("predict-elasticnet", help="Predict a card's price using Elastic Net")
+    p_pred_en.add_argument("name", type=str, help="Card name (English)")
+    p_pred_en.add_argument("--set", type=str, default=None, help="3-letter set code")
+    p_pred_en.set_defaults(func=cmd_predict_elasticnet)
+
+    # ── train-lgbm ──
+    p_train_lgbm = sub.add_parser("train-lgbm", help="Build features & train the LightGBM model")
+    p_train_lgbm.add_argument("--rebuild-features", action="store_true")
+    p_train_lgbm.set_defaults(func=cmd_train_lgbm)
+
+    # ── predict-lgbm ──
+    p_pred_lgbm = sub.add_parser("predict-lgbm", help="Predict a card's price using LightGBM")
+    p_pred_lgbm.add_argument("name", type=str, help="Card name (English)")
+    p_pred_lgbm.add_argument("--set", type=str, default=None, help="3-letter set code")
+    p_pred_lgbm.set_defaults(func=cmd_predict_lgbm)
+
+    # ── train-catboost ──
+    p_train_cb = sub.add_parser("train-catboost", help="Build features & train the CatBoost model")
+    p_train_cb.add_argument("--rebuild-features", action="store_true")
+    p_train_cb.set_defaults(func=cmd_train_catboost)
+
+    # ── predict-catboost ──
+    p_pred_cb = sub.add_parser("predict-catboost", help="Predict a card's price using CatBoost")
+    p_pred_cb.add_argument("name", type=str, help="Card name (English)")
+    p_pred_cb.add_argument("--set", type=str, default=None, help="3-letter set code")
+    p_pred_cb.set_defaults(func=cmd_predict_catboost)
+
+    # ── train-twostage ──
+    p_train_ts = sub.add_parser("train-twostage", help="Build features & train the Two-Stage model")
+    p_train_ts.add_argument("--rebuild-features", action="store_true")
+    p_train_ts.set_defaults(func=cmd_train_twostage)
+
+    # ── predict-twostage ──
+    p_pred_ts = sub.add_parser("predict-twostage", help="Predict a card's price using Two-Stage model")
+    p_pred_ts.add_argument("name", type=str, help="Card name (English)")
+    p_pred_ts.add_argument("--set", type=str, default=None, help="3-letter set code")
+    p_pred_ts.set_defaults(func=cmd_predict_twostage)
+
+    # ── train-quantile ──
+    p_train_q = sub.add_parser("train-quantile", help="Build features & train the Quantile model")
+    p_train_q.add_argument("--rebuild-features", action="store_true")
+    p_train_q.set_defaults(func=cmd_train_quantile)
+
+    # ── predict-quantile ──
+    p_pred_q = sub.add_parser("predict-quantile", help="Predict price range using Quantile model")
+    p_pred_q.add_argument("name", type=str, help="Card name (English)")
+    p_pred_q.add_argument("--set", type=str, default=None, help="3-letter set code")
+    p_pred_q.set_defaults(func=cmd_predict_quantile)
+
     # ── predict ──
     p_predict = sub.add_parser("predict", help="Predict a card's price")
     p_predict.add_argument("name", type=str, help="Card name (English)")
@@ -482,6 +913,12 @@ def main():
         help="Look up metagame data for a specific card.",
     )
     p_meta.set_defaults(func=cmd_metagame)
+
+    # ── gui ──
+    p_gui = sub.add_parser("gui", help="Launch the interactive Streamlit GUI")
+    p_gui.set_defaults(func=lambda _args: os.system(
+        f'python -m streamlit run "{os.path.join(os.path.dirname(__file__), "gui.py")}"'
+    ))
 
     args = parser.parse_args()
     args.func(args)

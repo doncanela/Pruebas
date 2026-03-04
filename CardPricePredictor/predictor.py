@@ -20,7 +20,7 @@ import pandas as pd
 import requests
 
 import config
-from feature_engineer import _card_to_row
+from feature_engineer import _card_to_row, apply_tfidf_svd
 from model import load_model
 
 
@@ -59,6 +59,7 @@ def predict_card(
     # 2. Feature-engineer
     row = _card_to_row(card_dict)
     row_df = pd.DataFrame([row])
+    row_df = apply_tfidf_svd(row_df, card_dict.get("oracle_text", ""))
 
     # 3. Load model — use Reserved List model if the card is on the RL
     is_reserved = card_dict.get("reserved", False)
@@ -153,6 +154,7 @@ def predict_card_lasso(
     # 2. Feature-engineer
     row = _card_to_row(card_dict)
     row_df = pd.DataFrame([row])
+    row_df = apply_tfidf_svd(row_df, card_dict.get("oracle_text", ""))
 
     # 3. Load Lasso model — use RL variant if the card is on the Reserved List
     is_reserved = card_dict.get("reserved", False)
@@ -195,6 +197,594 @@ def predict_card_lasso(
         _print_prediction(result)
 
     return result
+
+
+# ─── Random Forest prediction ───────────────────────────────────────────────
+
+def predict_card_rf(
+    card_name: Optional[str] = None,
+    card_dict: Optional[dict] = None,
+    set_code: Optional[str] = None,
+    verbose: bool = True,
+) -> dict:
+    """Predict Cardmarket EUR price using the Random Forest model."""
+    from model_rf import load_rf_model, load_rf_reserved_list_model
+
+    if card_dict is None:
+        if card_name is None:
+            raise ValueError("Provide either `card_name` or `card_dict`.")
+        card_dict = _fetch_card(card_name, set_code)
+
+    card_dict = _enrich_single_card(card_dict)
+    row = _card_to_row(card_dict)
+    row_df = pd.DataFrame([row])
+    row_df = apply_tfidf_svd(row_df, card_dict.get("oracle_text", ""))
+
+    is_reserved = card_dict.get("reserved", False)
+    if is_reserved and os.path.exists(config.RF_RL_MODEL_PATH):
+        model, scaler, feature_cols = load_rf_reserved_list_model()
+        model_used = "rf_reserved_list"
+    else:
+        model, scaler, feature_cols = load_rf_model()
+        model_used = "rf_main"
+
+    for col in feature_cols:
+        if col not in row_df.columns:
+            row_df[col] = 0
+    row_df = row_df[feature_cols]
+
+    X = scaler.transform(row_df)
+    pred_log = model.predict(X)[0]
+    pred_price = max(float(np.expm1(pred_log)), 0.01)
+
+    current = card_dict.get("prices", {}).get(config.PRICE_FIELD)
+    current_price = float(current) if current else None
+
+    result = {
+        "card_name": card_dict.get("name", "Unknown"),
+        "set": card_dict.get("set_name", "Unknown"),
+        "set_code": card_dict.get("set", "???"),
+        "rarity": card_dict.get("rarity", "unknown"),
+        "predicted_price_eur": round(pred_price, 2),
+        "current_price_eur": round(current_price, 2) if current_price else None,
+        "mana_cost": card_dict.get("mana_cost", ""),
+        "type_line": card_dict.get("type_line", ""),
+        "model_used": model_used,
+    }
+
+    if verbose:
+        print(f"\n  [Random Forest model: {model_used}]")
+        _print_prediction(result)
+
+    return result
+
+
+# ─── TabNet prediction ──────────────────────────────────────────────────────
+
+def predict_card_tabnet(
+    card_name: Optional[str] = None,
+    card_dict: Optional[dict] = None,
+    set_code: Optional[str] = None,
+    verbose: bool = True,
+) -> dict:
+    """Predict Cardmarket EUR price using the TabNet model."""
+    from model_tabnet import load_tabnet_model, load_tabnet_reserved_list_model
+
+    if card_dict is None:
+        if card_name is None:
+            raise ValueError("Provide either `card_name` or `card_dict`.")
+        card_dict = _fetch_card(card_name, set_code)
+
+    card_dict = _enrich_single_card(card_dict)
+    row = _card_to_row(card_dict)
+    row_df = pd.DataFrame([row])
+    row_df = apply_tfidf_svd(row_df, card_dict.get("oracle_text", ""))
+
+    is_reserved = card_dict.get("reserved", False)
+    if is_reserved and os.path.exists(os.path.join(config.TABNET_RL_MODEL_DIR, "tabnet_rl.zip")):
+        model, scaler, feature_cols = load_tabnet_reserved_list_model()
+        model_used = "tabnet_reserved_list"
+    else:
+        model, scaler, feature_cols = load_tabnet_model()
+        model_used = "tabnet_main"
+
+    for col in feature_cols:
+        if col not in row_df.columns:
+            row_df[col] = 0
+    row_df = row_df[feature_cols]
+
+    X = scaler.transform(row_df).astype(np.float32)
+    pred_log = model.predict(X).flatten()[0]
+    pred_price = max(float(np.expm1(pred_log)), 0.01)
+
+    current = card_dict.get("prices", {}).get(config.PRICE_FIELD)
+    current_price = float(current) if current else None
+
+    result = {
+        "card_name": card_dict.get("name", "Unknown"),
+        "set": card_dict.get("set_name", "Unknown"),
+        "set_code": card_dict.get("set", "???"),
+        "rarity": card_dict.get("rarity", "unknown"),
+        "predicted_price_eur": round(pred_price, 2),
+        "current_price_eur": round(current_price, 2) if current_price else None,
+        "mana_cost": card_dict.get("mana_cost", ""),
+        "type_line": card_dict.get("type_line", ""),
+        "model_used": model_used,
+    }
+
+    if verbose:
+        print(f"\n  [TabNet model: {model_used}]")
+        _print_prediction(result)
+
+    return result
+
+
+# ─── Elastic Net prediction ─────────────────────────────────────────────────
+
+def predict_card_elasticnet(
+    card_name: Optional[str] = None,
+    card_dict: Optional[dict] = None,
+    set_code: Optional[str] = None,
+    verbose: bool = True,
+) -> dict:
+    """Predict Cardmarket EUR price using the Elastic Net (TF-IDF) model."""
+    from model_elasticnet import load_elasticnet_model, load_elasticnet_reserved_list_model
+    import scipy.sparse as sp
+
+    if card_dict is None:
+        if card_name is None:
+            raise ValueError("Provide either `card_name` or `card_dict`.")
+        card_dict = _fetch_card(card_name, set_code)
+
+    card_dict = _enrich_single_card(card_dict)
+    row = _card_to_row(card_dict)
+    row_df = pd.DataFrame([row])
+    row_df = apply_tfidf_svd(row_df, card_dict.get("oracle_text", ""))
+
+    is_reserved = card_dict.get("reserved", False)
+    if is_reserved and os.path.exists(config.ELASTICNET_RL_MODEL_PATH):
+        model, scaler, feature_cols, tfidf = load_elasticnet_reserved_list_model()
+        model_used = "elasticnet_reserved_list"
+    else:
+        model, scaler, feature_cols, tfidf = load_elasticnet_model()
+        model_used = "elasticnet_main"
+
+    # Build sparse TF-IDF + dense feature matrix
+    oracle_text = card_dict.get("oracle_text", "")
+    tfidf_sparse = tfidf.transform([oracle_text])
+
+    for col in feature_cols:
+        if col not in row_df.columns:
+            row_df[col] = 0
+    dense = scaler.transform(row_df[feature_cols])
+    dense_sparse = sp.csr_matrix(dense)
+    X = sp.hstack([tfidf_sparse, dense_sparse], format="csr")
+
+    pred_log = model.predict(X)[0]
+    pred_price = max(float(np.expm1(pred_log)), 0.01)
+
+    current = card_dict.get("prices", {}).get(config.PRICE_FIELD)
+    current_price = float(current) if current else None
+
+    result = {
+        "card_name": card_dict.get("name", "Unknown"),
+        "set": card_dict.get("set_name", "Unknown"),
+        "set_code": card_dict.get("set", "???"),
+        "rarity": card_dict.get("rarity", "unknown"),
+        "predicted_price_eur": round(pred_price, 2),
+        "current_price_eur": round(current_price, 2) if current_price else None,
+        "mana_cost": card_dict.get("mana_cost", ""),
+        "type_line": card_dict.get("type_line", ""),
+        "model_used": model_used,
+    }
+
+    if verbose:
+        print(f"\n  [Elastic Net model: {model_used}]")
+        _print_prediction(result)
+
+    return result
+
+
+# ─── LightGBM prediction ────────────────────────────────────────────────────
+
+def predict_card_lgbm(
+    card_name: Optional[str] = None,
+    card_dict: Optional[dict] = None,
+    set_code: Optional[str] = None,
+    verbose: bool = True,
+) -> dict:
+    """Predict Cardmarket EUR price using the LightGBM model."""
+    from model_lgbm import load_lgbm_model, load_lgbm_reserved_list_model
+
+    if card_dict is None:
+        if card_name is None:
+            raise ValueError("Provide either `card_name` or `card_dict`.")
+        card_dict = _fetch_card(card_name, set_code)
+
+    card_dict = _enrich_single_card(card_dict)
+    row = _card_to_row(card_dict)
+    row_df = pd.DataFrame([row])
+    row_df = apply_tfidf_svd(row_df, card_dict.get("oracle_text", ""))
+
+    is_reserved = card_dict.get("reserved", False)
+    if is_reserved and os.path.exists(config.LGBM_RL_MODEL_PATH):
+        model, scaler, feature_cols = load_lgbm_reserved_list_model()
+        model_used = "lgbm_reserved_list"
+    else:
+        model, scaler, feature_cols = load_lgbm_model()
+        model_used = "lgbm_main"
+
+    for col in feature_cols:
+        if col not in row_df.columns:
+            row_df[col] = 0
+    row_df = row_df[feature_cols]
+
+    X = scaler.transform(row_df)
+    pred_log = model.predict(X)[0]
+    pred_price = max(float(np.expm1(pred_log)), 0.01)
+
+    current = card_dict.get("prices", {}).get(config.PRICE_FIELD)
+    current_price = float(current) if current else None
+
+    result = {
+        "card_name": card_dict.get("name", "Unknown"),
+        "set": card_dict.get("set_name", "Unknown"),
+        "set_code": card_dict.get("set", "???"),
+        "rarity": card_dict.get("rarity", "unknown"),
+        "predicted_price_eur": round(pred_price, 2),
+        "current_price_eur": round(current_price, 2) if current_price else None,
+        "mana_cost": card_dict.get("mana_cost", ""),
+        "type_line": card_dict.get("type_line", ""),
+        "model_used": model_used,
+    }
+
+    if verbose:
+        print(f"\n  [LightGBM model: {model_used}]")
+        _print_prediction(result)
+
+    return result
+
+
+# ─── CatBoost prediction ────────────────────────────────────────────────────
+
+def predict_card_catboost(
+    card_name: Optional[str] = None,
+    card_dict: Optional[dict] = None,
+    set_code: Optional[str] = None,
+    verbose: bool = True,
+) -> dict:
+    """Predict Cardmarket EUR price using the CatBoost model."""
+    from model_catboost import load_catboost_model, load_catboost_reserved_list_model
+
+    if card_dict is None:
+        if card_name is None:
+            raise ValueError("Provide either `card_name` or `card_dict`.")
+        card_dict = _fetch_card(card_name, set_code)
+
+    card_dict = _enrich_single_card(card_dict)
+    row = _card_to_row(card_dict)
+    row_df = pd.DataFrame([row])
+    row_df = apply_tfidf_svd(row_df, card_dict.get("oracle_text", ""))
+
+    is_reserved = card_dict.get("reserved", False)
+    if is_reserved and os.path.exists(config.CATBOOST_RL_MODEL_PATH):
+        model, feature_cols, cat_indices = load_catboost_reserved_list_model()
+        model_used = "catboost_reserved_list"
+    else:
+        model, feature_cols, cat_indices = load_catboost_model()
+        model_used = "catboost_main"
+
+    for col in feature_cols:
+        if col not in row_df.columns:
+            row_df[col] = 0
+    row_df = row_df[feature_cols].copy()
+
+    # Cast categorical columns to str for CatBoost
+    for idx in cat_indices:
+        col = feature_cols[idx]
+        row_df[col] = row_df[col].astype(str)
+
+    from catboost import Pool
+    pool = Pool(row_df, cat_features=cat_indices)
+    pred_log = model.predict(pool)[0]
+    pred_price = max(float(np.expm1(pred_log)), 0.01)
+
+    current = card_dict.get("prices", {}).get(config.PRICE_FIELD)
+    current_price = float(current) if current else None
+
+    result = {
+        "card_name": card_dict.get("name", "Unknown"),
+        "set": card_dict.get("set_name", "Unknown"),
+        "set_code": card_dict.get("set", "???"),
+        "rarity": card_dict.get("rarity", "unknown"),
+        "predicted_price_eur": round(pred_price, 2),
+        "current_price_eur": round(current_price, 2) if current_price else None,
+        "mana_cost": card_dict.get("mana_cost", ""),
+        "type_line": card_dict.get("type_line", ""),
+        "model_used": model_used,
+    }
+
+    if verbose:
+        print(f"\n  [CatBoost model: {model_used}]")
+        _print_prediction(result)
+
+    return result
+
+
+# ─── Two-Stage prediction ───────────────────────────────────────────────────
+
+def predict_card_twostage(
+    card_name: Optional[str] = None,
+    card_dict: Optional[dict] = None,
+    set_code: Optional[str] = None,
+    verbose: bool = True,
+) -> dict:
+    """Predict Cardmarket EUR price using the Two-Stage bulk/non-bulk model."""
+    from model_twostage import load_twostage_model, load_twostage_reserved_list_model
+
+    if card_dict is None:
+        if card_name is None:
+            raise ValueError("Provide either `card_name` or `card_dict`.")
+        card_dict = _fetch_card(card_name, set_code)
+
+    card_dict = _enrich_single_card(card_dict)
+    row = _card_to_row(card_dict)
+    row_df = pd.DataFrame([row])
+    row_df = apply_tfidf_svd(row_df, card_dict.get("oracle_text", ""))
+
+    is_reserved = card_dict.get("reserved", False)
+    if is_reserved and os.path.exists(config.TWOSTAGE_RL_CLASSIFIER_PATH):
+        clf, reg, scaler, feature_cols = load_twostage_reserved_list_model()
+        model_used = "twostage_reserved_list"
+    else:
+        clf, reg, scaler, feature_cols = load_twostage_model()
+        model_used = "twostage_main"
+
+    for col in feature_cols:
+        if col not in row_df.columns:
+            row_df[col] = 0
+    row_df = row_df[feature_cols]
+
+    X = scaler.transform(row_df)
+    is_bulk = clf.predict(X)[0]
+
+    if is_bulk == 1:
+        pred_price = config.TWOSTAGE_BULK_THRESHOLD * 0.20  # ~€0.10
+    else:
+        pred_log = reg.predict(X)[0]
+        pred_price = max(float(np.expm1(pred_log)), 0.01)
+
+    current = card_dict.get("prices", {}).get(config.PRICE_FIELD)
+    current_price = float(current) if current else None
+
+    result = {
+        "card_name": card_dict.get("name", "Unknown"),
+        "set": card_dict.get("set_name", "Unknown"),
+        "set_code": card_dict.get("set", "???"),
+        "rarity": card_dict.get("rarity", "unknown"),
+        "predicted_price_eur": round(pred_price, 2),
+        "current_price_eur": round(current_price, 2) if current_price else None,
+        "mana_cost": card_dict.get("mana_cost", ""),
+        "type_line": card_dict.get("type_line", ""),
+        "model_used": model_used,
+        "is_bulk": bool(is_bulk),
+    }
+
+    if verbose:
+        bulk_tag = " [BULK]" if is_bulk else ""
+        print(f"\n  [Two-Stage model: {model_used}{bulk_tag}]")
+        _print_prediction(result)
+
+    return result
+
+
+# ─── Quantile prediction ────────────────────────────────────────────────────
+
+def predict_card_quantile(
+    card_name: Optional[str] = None,
+    card_dict: Optional[dict] = None,
+    set_code: Optional[str] = None,
+    verbose: bool = True,
+) -> dict:
+    """
+    Predict price range using quantile regression (P10/P50/P90).
+    Returns predicted_price_eur (P50) plus predicted_p10 and predicted_p90.
+    """
+    from model_quantile import load_quantile_models, load_quantile_reserved_list_models
+
+    if card_dict is None:
+        if card_name is None:
+            raise ValueError("Provide either `card_name` or `card_dict`.")
+        card_dict = _fetch_card(card_name, set_code)
+
+    card_dict = _enrich_single_card(card_dict)
+    row = _card_to_row(card_dict)
+    row_df = pd.DataFrame([row])
+    row_df = apply_tfidf_svd(row_df, card_dict.get("oracle_text", ""))
+
+    is_reserved = card_dict.get("reserved", False)
+    if is_reserved and os.path.exists(config.QUANTILE_RL_MODEL_P50_PATH):
+        models, scaler, feature_cols = load_quantile_reserved_list_models()
+        model_used = "quantile_reserved_list"
+    else:
+        models, scaler, feature_cols = load_quantile_models()
+        model_used = "quantile_main"
+
+    for col in feature_cols:
+        if col not in row_df.columns:
+            row_df[col] = 0
+    row_df = row_df[feature_cols]
+
+    X = scaler.transform(row_df)
+    p10 = max(float(np.expm1(models["P10"].predict(X)[0])), 0.01)
+    p50 = max(float(np.expm1(models["P50"].predict(X)[0])), 0.01)
+    p90 = max(float(np.expm1(models["P90"].predict(X)[0])), 0.01)
+
+    # Ensure monotonicity: P10 ≤ P50 ≤ P90
+    p10 = min(p10, p50)
+    p90 = max(p90, p50)
+
+    current = card_dict.get("prices", {}).get(config.PRICE_FIELD)
+    current_price = float(current) if current else None
+
+    result = {
+        "card_name": card_dict.get("name", "Unknown"),
+        "set": card_dict.get("set_name", "Unknown"),
+        "set_code": card_dict.get("set", "???"),
+        "rarity": card_dict.get("rarity", "unknown"),
+        "predicted_price_eur": round(p50, 2),
+        "predicted_p10": round(p10, 2),
+        "predicted_p90": round(p90, 2),
+        "current_price_eur": round(current_price, 2) if current_price else None,
+        "mana_cost": card_dict.get("mana_cost", ""),
+        "type_line": card_dict.get("type_line", ""),
+        "model_used": model_used,
+    }
+
+    if verbose:
+        print(f"\n  [Quantile model: {model_used}]")
+        _print_prediction(result)
+        print(f"  Price range: €{p10:.2f} (P10) – €{p50:.2f} (P50) – €{p90:.2f} (P90)")
+        print()
+
+    return result
+
+
+# ─── All-models prediction ──────────────────────────────────────────────────
+
+_MODEL_REGISTRY = [
+    ("XGBoost",    "predict_card",           config.MODEL_PATH),
+    ("RF",         "predict_card_rf",        config.RF_MODEL_PATH),
+    ("TabNet",     "predict_card_tabnet",    config.TABNET_MODEL_DIR),
+    ("Lasso",      "predict_card_lasso",     config.LASSO_MODEL_PATH),
+    ("ElasticNet", "predict_card_elasticnet", config.ELASTICNET_MODEL_PATH),
+    ("LightGBM",   "predict_card_lgbm",     config.LGBM_MODEL_PATH),
+    ("CatBoost",   "predict_card_catboost",  config.CATBOOST_MODEL_PATH),
+    ("TwoStage",   "predict_card_twostage",  config.TWOSTAGE_CLASSIFIER_PATH),
+    ("Quantile",   "predict_card_quantile",  config.QUANTILE_MODEL_P50_PATH),
+]
+
+
+def predict_card_all(
+    card_name: Optional[str] = None,
+    card_dict: Optional[dict] = None,
+    set_code: Optional[str] = None,
+    verbose: bool = True,
+) -> list[dict]:
+    """
+    Run every available model on a single card and return all predictions.
+    Fetches the card once and reuses the dict for every model.
+    """
+    # 1. Resolve card data once
+    if card_dict is None:
+        if card_name is None:
+            raise ValueError("Provide either `card_name` or `card_dict`.")
+        card_dict = _fetch_card(card_name, set_code)
+
+    card_dict = _enrich_single_card(card_dict)
+
+    # 2. Run each model that has trained artifacts
+    results: list[dict] = []
+    for label, func_name, artifact_path in _MODEL_REGISTRY:
+        if not os.path.exists(artifact_path):
+            continue
+        try:
+            fn = globals()[func_name]
+            r = fn(card_dict=card_dict, verbose=False)
+            r["model_label"] = label
+            results.append(r)
+        except Exception as e:
+            results.append({
+                "model_label": label,
+                "predicted_price_eur": None,
+                "error": str(e),
+            })
+
+    if not results:
+        raise RuntimeError("No trained models found. Run a train command first.")
+
+    # 3. Pretty-print comparison table
+    if verbose:
+        _print_all_predictions(card_dict, results)
+
+    # 4. Log best prediction (LightGBM > XGBoost > first)
+    best = (
+        next((r for r in results if r.get("model_label") == "LightGBM"), None)
+        or next((r for r in results if r.get("model_label") == "XGBoost"), None)
+        or results[0]
+    )
+    try:
+        from price_history import log_prediction
+        log_prediction(best)
+    except Exception:
+        pass
+    try:
+        from db import insert_prediction
+        insert_prediction(best)
+    except Exception:
+        pass
+
+    return results
+
+
+def _print_all_predictions(card: dict, results: list[dict]) -> None:
+    """Print a single card header followed by a multi-model price table."""
+    name     = card.get("name", "Unknown")
+    set_name = card.get("set_name", "Unknown")
+    mana     = card.get("mana_cost", "")
+    type_l   = card.get("type_line", "")
+    rarity   = card.get("rarity", "unknown")
+    current  = card.get("prices", {}).get(config.PRICE_FIELD)
+    cur_str  = f"€{float(current):.2f}" if current else "N/A"
+
+    w = 78  # box width (wider for quantile range)
+    bar = "═" * (w - 2)
+    mid = "─" * (w - 2)
+
+    print()
+    print(f"╔{bar}╗")
+    print(f"║  Card : {name:<{w-12}}║")
+    print(f"║  Set  : {set_name:<{w-12}}║")
+    print(f"║  Mana : {mana:<{w-12}}║")
+    print(f"║  Type : {type_l:<{w-12}}║")
+    print(f"║  Rare : {rarity:<{w-12}}║")
+    print(f"╠{bar}╣")
+    print(f"║  Current Cardmarket price : {cur_str:<{w-32}}║")
+    print(f"╠{bar}╣")
+
+    # Table header
+    hdr = f"  {'Model':<12} {'Predicted':>12}  {'Diff':>10}  {'Diff %':>8}"
+    print(f"║{hdr:<{w-2}}║")
+    print(f"║  {'─'*10}  {'─'*12}  {'─'*10}  {'─'*8}  ║")
+
+    cur_val = float(current) if current else None
+    for r in results:
+        label = r.get("model_label", "?")
+        pred  = r.get("predicted_price_eur")
+        if pred is None:
+            row = f"  {label:<12} {'ERROR':>12}  {'':>10}  {'':>8}"
+        else:
+            pred_s = f"€{pred:.2f}"
+            if cur_val and cur_val > 0:
+                diff   = pred - cur_val
+                pct    = diff / cur_val * 100
+                diff_s = f"{'+' if diff >= 0 else ''}{diff:.2f}"
+                pct_s  = f"{'+' if pct >= 0 else ''}{pct:.1f}%"
+            else:
+                diff_s = "—"
+                pct_s  = "—"
+            # Show range for Quantile model
+            p10 = r.get("predicted_p10")
+            p90 = r.get("predicted_p90")
+            if p10 is not None and p90 is not None:
+                range_s = f"  (€{p10:.2f}–€{p90:.2f})"
+            else:
+                range_s = ""
+            row = f"  {label:<12} {pred_s:>12}  {diff_s:>10}  {pct_s:>8}{range_s}"
+        print(f"║{row:<{w-2}}║")
+
+    print(f"╚{bar}╝")
+    print()
 
 
 # ─── Scryfall fetch ──────────────────────────────────────────────────────────
