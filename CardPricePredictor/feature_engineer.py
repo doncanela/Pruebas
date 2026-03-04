@@ -35,8 +35,12 @@ for full temporal caveats.
 import re
 from datetime import datetime
 
+import joblib
 import numpy as np
 import pandas as pd
+from sklearn.decomposition import TruncatedSVD
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.pipeline import Pipeline
 from tqdm import tqdm
 
 import config
@@ -83,6 +87,35 @@ def build_feature_dataframe(cards: list[dict]) -> pd.DataFrame:
 
     df = df.reset_index(drop=True)
 
+    # ── TF-IDF + SVD on oracle text ────────────────────────────────────────
+    # Fit a TF-IDF vectorizer on the oracle text corpus, reduce to dense
+    # components with TruncatedSVD, and append them as features.
+    n_components = config.TFIDF_N_COMPONENTS
+    if "_oracle_text" in df.columns:
+        corpus = df["_oracle_text"].fillna("").astype(str)
+        tfidf_svd = Pipeline([
+            ("tfidf", TfidfVectorizer(
+                analyzer="word",
+                ngram_range=(1, 2),
+                max_features=5000,
+                sublinear_tf=True,
+                min_df=5,
+                max_df=0.95,
+                strip_accents="unicode",
+            )),
+            ("svd", TruncatedSVD(n_components=n_components, random_state=42)),
+        ])
+        svd_matrix = tfidf_svd.fit_transform(corpus)
+        svd_cols = [f"tfidf_svd_{i}" for i in range(n_components)]
+        svd_df = pd.DataFrame(svd_matrix, columns=svd_cols, index=df.index)
+        df = pd.concat([df, svd_df], axis=1)
+
+        # Persist the fitted pipeline for inference
+        joblib.dump(tfidf_svd, config.TFIDF_SVD_PATH)
+        print(f"TF-IDF + SVD: {n_components} components fitted and saved to {config.TFIDF_SVD_PATH}")
+    else:
+        print("⚠ _oracle_text column missing — skipping TF-IDF + SVD")
+
     # Save for inspection
     df.to_csv(config.FEATURES_PATH, index=False)
     print(f"Feature matrix: {df.shape[0]:,} rows × {df.shape[1]} columns")
@@ -96,6 +129,39 @@ def get_feature_columns(df: pd.DataFrame) -> list[str]:
         c for c in df.columns
         if c != "price_eur" and not c.startswith("_")
     ]
+
+
+# ─── TF-IDF + SVD inference helper ──────────────────────────────────────────
+
+_tfidf_svd_cache = None  # module-level cache
+
+
+def apply_tfidf_svd(row_df: pd.DataFrame, oracle_text: str) -> pd.DataFrame:
+    """
+    Apply the fitted TF-IDF + SVD pipeline to a single card's oracle text
+    and add the SVD component columns to the row DataFrame.
+
+    Used at inference time (predictor.py) — the pipeline must have been
+    fitted during training via build_feature_dataframe().
+    """
+    global _tfidf_svd_cache
+    import os
+
+    if not os.path.exists(config.TFIDF_SVD_PATH):
+        # Pipeline not fitted yet — return row as-is (columns will be filled
+        # with 0 during feature alignment in predict_card*)
+        return row_df
+
+    if _tfidf_svd_cache is None:
+        _tfidf_svd_cache = joblib.load(config.TFIDF_SVD_PATH)
+
+    pipeline = _tfidf_svd_cache
+    n_components = pipeline.named_steps["svd"].n_components
+    svd_values = pipeline.transform([oracle_text])[0]
+    for i in range(n_components):
+        row_df[f"tfidf_svd_{i}"] = svd_values[i]
+
+    return row_df
 
 
 # ─── Metagame enrichment ─────────────────────────────────────────────────────
@@ -154,6 +220,25 @@ def _card_to_row(card: dict) -> dict:
     # ── Target ──────────────────────────────────────────────────
     price_str = card.get("prices", {}).get(config.PRICE_FIELD)
     row["price_eur"] = float(price_str) if price_str else np.nan
+
+    # ── Metadata (excluded from features by underscore prefix) ─
+    row["_oracle_text"] = card.get("oracle_text", "")
+
+    # Categorical metadata for CatBoost (also excluded by underscore prefix)
+    row["_cat_rarity"] = card.get("rarity", "common")
+    ci = card.get("color_identity", [])
+    row["_cat_color_identity"] = "".join(sorted(ci)) if ci else "C"
+    _tl = card.get("type_line", "").lower()
+    if "creature" in _tl:
+        row["_cat_type_bucket"] = "creature"
+    elif any(t in _tl for t in ("enchantment", "artifact", "planeswalker", "battle")):
+        row["_cat_type_bucket"] = "noncreature_permanent"
+    elif any(t in _tl for t in ("instant", "sorcery")):
+        row["_cat_type_bucket"] = "spell"
+    elif "land" in _tl:
+        row["_cat_type_bucket"] = "land"
+    else:
+        row["_cat_type_bucket"] = "other"
 
     # ── 1. Mana cost ────────────────────────────────────────────
     row["cmc"] = card.get("cmc", 0.0)
@@ -241,6 +326,116 @@ def _card_to_row(card: dict) -> dict:
     row["text_unique_words"] = len(set(oracle.lower().split()))
     row["text_ability_count"] = oracle.count("\n") + (1 if oracle.strip() else 0)
 
+    # ── 5b. Text pattern tokens ────────────────────────────────
+    # Pre-compute lowered oracle once (already have it for some features)
+    _ol = oracle.lower()
+
+    # — Tutors & consistency —
+    row["txt_search_library_for"] = int("search your library for" in _ol)
+    row["txt_tutor_unrestricted"] = int(bool(re.search(
+        r"search your library for a card", _ol
+    )))
+    row["txt_tutor_typed"] = int(bool(re.search(
+        r"search your library for an? (?:artifact|enchantment|land|creature|instant|sorcery|planeswalker)",
+        _ol,
+    )))
+    row["txt_put_onto_battlefield"] = int("put it onto the battlefield" in _ol
+        or "put that card onto the battlefield" in _ol
+        or "put them onto the battlefield" in _ol)
+    row["txt_put_into_hand"] = int("put it into your hand" in _ol
+        or "put that card into your hand" in _ol)
+    row["txt_reveal_it"] = int("reveal it" in _ol or "reveal that card" in _ol)
+    row["txt_shuffle_library"] = int("shuffle your library" in _ol
+        or "shuffle it into" in _ol)
+
+    # — Mana cheating / broken costs —
+    row["txt_add_two_mana"] = int(bool(re.search(
+        r"add (?:two mana|\{.\}\{.\})", _ol
+    )))
+    row["txt_add_any_color"] = int("add one mana of any color" in _ol
+        or "add one mana of any type" in _ol)
+    row["txt_scaling_mana"] = int(bool(re.search(
+        r"for each .{1,40} add", _ol
+    )))
+    row["txt_pay_zero"] = int("you may pay {0}" in _ol
+        or "costs {0}" in _ol
+        or "pay {0}" in _ol)
+    row["txt_untap_land"] = int(bool(re.search(
+        r"untap target (?:land|permanent)", _ol
+    )))
+    row["txt_cast_untap"] = int(bool(re.search(
+        r"whenever you cast .{0,20} untap", _ol
+    )))
+
+    # — Raw advantage engines (repeatable value) —
+    row["txt_draw_two"] = int("draw two cards" in _ol)
+    row["txt_draw_three_plus"] = int("draw three cards" in _ol
+        or "draw four cards" in _ol
+        or "draw seven cards" in _ol)
+    row["txt_draw_x"] = int(bool(re.search(r"draw x cards", _ol)))
+    row["txt_upkeep_draw"] = int(bool(re.search(
+        r"(?:beginning of|at the beginning of) your upkeep.{0,20}draw", _ol
+    )))
+    row["txt_cast_trigger_draw"] = int(bool(re.search(
+        r"whenever you cast .{0,30} draw a card", _ol
+    )))
+    row["txt_etb_trigger_draw"] = int(bool(re.search(
+        r"whenever .{0,30} enters .{0,30} draw a card", _ol
+    )))
+    row["txt_additional_land"] = int("play an additional land" in _ol
+        or "play two additional lands" in _ol)
+    row["txt_play_from_top"] = int(bool(re.search(
+        r"(?:play|cast) (?:cards|spells) from the top of your library", _ol
+    )))
+    row["txt_impulse_draw"] = int(bool(re.search(
+        r"exile the top .{0,30} you may (?:play|cast)", _ol
+    )))
+
+    # — Extra turns / extra combats / loop enablers —
+    row["txt_extra_turn"] = int("extra turn" in _ol)
+    row["txt_extra_combat"] = int("additional combat phase" in _ol)
+    row["txt_untap_all_creatures"] = int("untap all creatures you control" in _ol)
+    row["txt_repeat_process"] = int("repeat this process" in _ol)
+
+    # — Premium interaction (staple-shaped text) —
+    row["txt_counter_spell"] = int("counter target spell" in _ol
+        or "counter target activated" in _ol
+        or "counter that spell" in _ol)
+    row["txt_cant_be_countered"] = int("can't be countered" in _ol)
+    row["txt_exile_target"] = int(bool(re.search(
+        r"exile target", _ol
+    )))
+    row["txt_exile_all"] = int(bool(re.search(
+        r"exile all", _ol
+    )))
+    row["txt_destroy_all"] = int(bool(re.search(
+        r"destroy all", _ol
+    )))
+    row["txt_each_opponent"] = int("each opponent" in _ol)
+    row["txt_target_sac"] = int(bool(re.search(
+        r"target (?:player|opponent) sacrifices", _ol
+    )))
+    row["txt_players_cant"] = int(bool(re.search(
+        r"(?:players|opponents) can't", _ol
+    )))
+
+    # — Additional structure & text patterns —
+    row["txt_cast_from_graveyard"] = int(bool(re.search(
+        r"(?:cast|play) .{0,30} from (?:your |a )?graveyard", _ol
+    )))
+    row["txt_copy_target_spell"] = int("copy target" in _ol)
+    row["txt_as_though_flash"] = int(
+        "as though it had flash" in _ol or "you may cast" in _ol and "any time" in _ol
+    )
+    row["txt_until_end_of_turn"] = _ol.count("until end of turn")
+    row["txt_choose_one"] = int(bool(re.search(
+        r"choose (?:one|two|three)", _ol
+    )))
+    row["text_num_sentences"] = len(re.findall(r"[.!]\s", oracle)) + (1 if oracle.strip() else 0)
+    row["txt_x_count"] = _ol.count(" x ")  # scaling cue ("X" in costs/effects)
+    row["txt_each_count"] = _ol.count("each")  # scaling: "for each", "each opponent"
+    row["txt_for_each"] = _ol.count("for each")
+
     # ── 6. Keywords ────────────────────────────────────────────
     keywords = set(card.get("keywords", []))
     for kw in config.TRACKED_KEYWORDS:
@@ -261,6 +456,9 @@ def _card_to_row(card: dict) -> dict:
     # Ratio: avg previous price vs reprint count (demand signal)
     rc = row["reprint_count"]
     row["avg_price_per_reprint"] = row["avg_prev_price"] / rc if rc > 0 else 0.0
+
+    # First-printing flag: no older printings exist
+    row["is_first_printing"] = int(row["reprint_count"] == 0 and not card.get("reprint", False))
 
     # ── 8. Set features ────────────────────────────────────────
     released = card.get("released_at", "2020-01-01")
@@ -370,6 +568,20 @@ def _card_to_row(card: dict) -> dict:
     row["rarity_x_text_length"] = rn * row["text_length"]
     row["cmc_x_rarity"] = row["cmc"] * rn
     row["avg_prev_price_x_rarity"] = row["avg_prev_price"] * rn
+
+    # Additional interaction terms (G)
+    edhrec_val = row["edhrec_rank"] if row["edhrec_rank"] > 0 else 100000
+    row["edhrec_x_legendary"] = (1.0 / max(edhrec_val, 1)) * 10000 * row.get("is_legendary", 0)
+    row["edhrec_log"] = np.log1p(edhrec_val)
+    # Type bucket for metagame interaction: creature=1, noncreature_perm=2, spell=3, land=4
+    type_bucket = 0
+    if row.get("is_creature"):    type_bucket = 1
+    elif row.get("is_enchantment") or row.get("is_artifact") or row.get("is_planeswalker"): type_bucket = 2
+    elif row.get("is_instant") or row.get("is_sorcery"): type_bucket = 3
+    elif row.get("is_land"):      type_bucket = 4
+    row["type_bucket"] = type_bucket
+    row["staple_x_type"] = int(row.get("is_meta_staple", 0)) * type_bucket
+    row["printings_x_age"] = row["reprint_count"] * (row["oldest_printing_days"] / 365.0)
 
     # ── 13. Color identity hash ─────────────────────────────────
     color_id = card.get("color_identity", [])
@@ -555,6 +767,8 @@ def _card_to_row(card: dict) -> dict:
     row["is_universes_beyond"] = int(
         set_code.lower() in config.UNIVERSES_BEYOND_MARKERS
         or "universes beyond" in card.get("set_name", "").lower()
+        or card.get("security_stamp", "") == "triangle"
+        or "universesbeyond" in (card.get("promo_types") or [])
     )
 
     # Scarcity interaction: old × rare × low-supply (using design age)

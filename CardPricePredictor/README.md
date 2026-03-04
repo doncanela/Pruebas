@@ -1,6 +1,6 @@
 # MTG Card Price Predictor
 
-Predict **Cardmarket EUR Trend prices** of Magic: The Gathering cards using machine learning (XGBoost + Lasso).
+Predict **Cardmarket EUR Trend prices** of Magic: The Gathering cards using machine learning (XGBoost, Random Forest, TabNet, Lasso).
 
 This is a **cross-sectional price model**: it learns the relationship between card attributes and current market value across ~77,000 cards. For newly released cards it provides a useful price estimate based on how similar attributes are valued across the rest of the market.
 
@@ -8,9 +8,13 @@ Data is sourced from the **Scryfall API** (Cardmarket prices + card metadata) an
 
 **XGBoost model**: 279 features · R² 0.53 · MAE €1.13 · SMAPE 46% · temporal split · zero leakage · trained on 77,000+ cards
 
+**Random Forest model**: 1000 trees · R² 0.56 · MAE €1.07 · SMAPE 44% · impurity-based feature importance · strong ensemble baseline
+
+**TabNet model**: attention-based deep learning · R² 0.29 · MAE €1.53 · SMAPE 64% · learned feature selection via attention masks · interpretable neural network
+
 **Lasso model**: 29/277 features selected · R² 0.23 · MAE €2.25 · SMAPE 106% · auto-tuned alpha via LassoCV · interpretable linear baseline
 
-**Two-model architecture**: Reserved List cards (869 cards, €0–€31K) are routed to a dedicated specialist model, while all other cards use the main model. Both XGBoost and Lasso maintain their own RL specialists.
+**Two-model architecture**: Reserved List cards (869 cards, €0–€31K) are routed to a dedicated specialist model, while all other cards use the main model. All four model families (XGBoost, RF, TabNet, Lasso) maintain their own RL specialists.
 
 ---
 
@@ -92,7 +96,32 @@ This will:
 - Show top-25 feature importances
 - Save all models to `models/`
 
-### 3b. Train the Lasso model (alternative)
+### 3b. Train the Random Forest model
+
+```bash
+python main.py train-rf
+python main.py train-rf --rebuild-features
+```
+
+Trains a **Random Forest** (1000 trees, max_depth=20) with the same two-model architecture:
+- Main model on ~76K non-RL cards + RL specialist on ~869 cards
+- Same temporal split, sample weights, and evaluation as XGBoost
+- Impurity-based feature importance ranking
+
+### 3c. Train the TabNet model
+
+```bash
+python main.py train-tabnet
+python main.py train-tabnet --rebuild-features
+```
+
+Trains a **TabNet** (attention-based deep learning) model:
+- n_d=32, n_a=32, 5 attention steps, entmax masking
+- Early stopping on validation MAE (patience=30)
+- Learns feature importance via attention masks
+- Both main model and RL specialist
+
+### 3d. Train the Lasso model (linear baseline)
 
 ```bash
 python main.py train-lasso
@@ -120,7 +149,15 @@ python main.py batch "Ragavan, Nimble Pilferer" "The One Ring" "Orcish Bowmaster
 # Save batch results to JSON
 python main.py batch "Force of Will" "Mana Crypt" -o results.json
 
-# Predict using the Lasso model instead of XGBoost
+# Predict using the Random Forest model
+python main.py predict-rf "Sheoldred, the Apocalypse"
+python main.py predict-rf "Lightning Bolt" --set lea
+
+# Predict using the TabNet model
+python main.py predict-tabnet "Sheoldred, the Apocalypse"
+python main.py predict-tabnet "Lightning Bolt" --set lea
+
+# Predict using the Lasso model
 python main.py predict-lasso "Sheoldred, the Apocalypse"
 python main.py predict-lasso "Lightning Bolt" --set lea
 ```
@@ -190,8 +227,10 @@ CardPricePredictor/
 ├── data_collector.py      # Scryfall API data fetching + reprint/metagame enrichment
 ├── feature_engineer.py    # Raw JSON → 279 numeric features (leakage-free)
 ├── model.py               # XGBoost training & evaluation (main + Reserved List models)
+├── model_rf.py            # Random Forest training & evaluation (main + Reserved List)
+├── model_tabnet.py        # TabNet (deep learning) training & evaluation (main + RL)
 ├── model_lasso.py         # Lasso (L1) training & evaluation (main + Reserved List)
-├── predictor.py           # Single-card inference (XGBoost + Lasso, auto-routes RL)
+├── predictor.py           # Single-card inference (XGBoost/RF/TabNet/Lasso, auto-routes RL)
 ├── metagame_collector.py  # MTGGoldfish scraper (Standard/Pioneer/Modern/Legacy/Vintage)
 ├── price_history.py       # Prediction logging + price snapshots (local + DB)
 ├── db.py                  # Neon PostgreSQL integration (cards, predictions, snapshots)
@@ -222,7 +261,10 @@ CardPricePredictor/
 5. **Model (two-model architecture)**:
    - **Main model (XGBoost)**: Trained on ~76,000 non-Reserved-List cards with log-transformed prices, PseudoHuber loss, sample weights, temporal split, and a two-stage expensive-card specialist (≥€20) blended 60/40.
    - **Reserved List model (XGBoost)**: A dedicated XGBoost regressor trained on ~869 RL cards with squared-error loss, no outlier cap (prices span €0.02–€31,000), stronger regularisation, and heavier weighting on expensive cards.
-   - **Lasso alternative**: A LassoCV linear model (L1 regularisation) trained with the same pipeline. Auto-tunes alpha, selects ~29 features from 277, and provides an interpretable baseline. At inference, cards are automatically routed to the correct model based on the `reserved` flag.
+   - **Random Forest**: 1000 trees (max_depth=20) with the same temporal split, sample weights, and log-target pipeline. Provides a strong tree-ensemble baseline without boosting; uses impurity-based feature importance.
+   - **TabNet**: Attention-based deep learning (n_d=32, n_a=32, 5 steps, entmax masking). Trains with early stopping on validation MAE. Learns sparse feature selection via sequential attention — the attention masks reveal which features each card "looks at".
+   - **Lasso alternative**: A LassoCV linear model (L1 regularisation) trained with the same pipeline. Auto-tunes alpha, selects ~29 features from 277, and provides an interpretable baseline.
+   - At inference, cards are automatically routed to the correct RL/main model based on the `reserved` flag.
 
 6. **Inference**: Given a card name, we fetch its data from Scryfall, enrich with reprint info and metagame data, engineer the same 277 features, and run the model. The prediction is automatically logged to both a local JSONL file and the Neon PostgreSQL database.
 
@@ -321,23 +363,75 @@ RL cards span €0.02–€30,975 and behave very differently from standard card
 
 **Top features**: `meta_legacy_unknown`, `is_expansion_set`, `century_plus_reprints`, `meta_vintage_unknown`, `edhrec_rank`
 
+### Random Forest model (~76,258 non-RL cards)
+
+| Metric | XGBoost | RF |
+|---|---|---|
+| **MAE** | €1.13 | €1.07 |
+| **MedAE** | €0.14 | €0.13 |
+| **RMSE** | €4.63 | €4.53 |
+| **R²** | 0.53 | 0.56 |
+| **SMAPE** | 46% | 44% |
+| **Bracket accuracy** | 71.1% | 71.6% |
+| **Within ±1 bracket** | 94.2% | 94.2% |
+
+**Per-rarity MAE**: Common €0.12 · Uncommon €0.26 · Rare €1.19 · Mythic €3.55
+
+**Top RF features** (impurity decrease): `min_prev_price`, `avg_prev_price_x_rarity`, `avg_prev_price`, `rarity_x_edhrec`, `scarcity_x_rarity`, `supply_scarcity`, `max_prev_price`, `set_card_count`, `edhrec_rank`, `print_run_proxy`
+
+### RF Reserved List model (~869 cards)
+
+| Metric | Value |
+|---|---|
+| **MAE** | €49.55 |
+| **Median AE** | €9.91 |
+| **R²** | −1.24 |
+| **Bracket accuracy** | 34.5% |
+
+### TabNet model (deep learning, ~76,258 non-RL cards)
+
+| Metric | XGBoost | TabNet |
+|---|---|---|
+| **MAE** | €1.13 | €1.53 |
+| **MedAE** | €0.14 | €0.22 |
+| **RMSE** | €4.63 | €5.77 |
+| **R²** | 0.53 | 0.29 |
+| **SMAPE** | 46% | 64% |
+| **Bracket accuracy** | 71.1% | 62.4% |
+| **Within ±1 bracket** | 94.2% | 89.3% |
+
+**Per-rarity MAE**: Common €0.17 · Uncommon €0.42 · Rare €1.70 · Mythic €5.00
+
+**Top TabNet features** (attention importance): `txt_sacrifice_alt`, `supply_scarcity`, `edhrec_rank`, `min_prev_price`, `rarity_numeric`, `text_you_may`, `is_colorless`, `supply_drought_years`, `is_prerelease`, `kw_miracle`
+
+> TabNet's attention mechanism picks up different signals than tree models — notably, it focuses heavily on oracle text patterns (`txt_sacrifice_alt`, `text_you_may`) and supply indicators. Its main value is as a complementary model with different feature emphasis.
+
+### TabNet Reserved List model (~869 cards)
+
+| Metric | Value |
+|---|---|
+| **MAE** | €40.50 |
+| **Median AE** | €8.41 |
+| **R²** | −0.56 |
+| **Bracket accuracy** | 21.3% |
+
 ### Lasso model (linear baseline, ~76,258 non-RL cards)
 
 LassoCV automatically selects the best L1 regularisation strength and drives irrelevant coefficients to zero. This produces a simpler, more interpretable model at the cost of accuracy.
 
-| Metric | XGBoost | Lasso |
-|---|---|---|
-| **MAE** | €1.13 | €2.25 |
-| **MedAE** | €0.14 | €0.91 |
-| **RMSE** | €4.63 | €6.00 |
-| **R²** | 0.53 | 0.23 |
-| **SMAPE** | 46% | 106% |
-| **Features used** | 277 | 29 (10.5%) |
-| **Bracket accuracy** | 71.1% | 26.2% |
+| Metric | XGBoost | RF | TabNet | Lasso |
+|---|---|---|---|---|
+| **MAE** | €1.13 | **€1.07** | €1.53 | €2.25 |
+| **MedAE** | €0.14 | **€0.13** | €0.22 | €0.91 |
+| **RMSE** | €4.63 | **€4.53** | €5.77 | €6.00 |
+| **R²** | 0.53 | **0.56** | 0.29 | 0.23 |
+| **SMAPE** | 46% | **44%** | 64% | 106% |
+| **Features used** | 277 | 277 | 277 | 29 (10.5%) |
+| **Bracket accuracy** | 71.1% | **71.6%** | 62.4% | 26.2% |
 
 **Top Lasso features** (by absolute coefficient): `edhrec_rank` (−), `set_era` (−), `edhrec_top_1000` (+), `rarity_mythic` (+), `avg_price_per_reprint` (+), `meta_modern_unknown` (−), `rarity_numeric` (+), `scarcity_x_rarity` (+), `is_full_art` (+), `is_penny_legal` (−)
 
-> The Lasso model's main value is **interpretability**: the 29 non-zero coefficients clearly show which features drive price predictions in a linear sense. XGBoost remains the production model for accuracy.
+> **Model roles**: Random Forest slightly outperforms XGBoost and serves as a strong ensemble baseline. TabNet offers a complementary deep-learning perspective with attention-based feature selection. Lasso provides maximum interpretability with only 29 features. XGBoost remains the production default for its balance of accuracy and speed.
 
 ### Lasso Reserved List model (~869 cards)
 
