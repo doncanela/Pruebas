@@ -914,6 +914,12 @@ def main():
     )
     p_meta.set_defaults(func=cmd_metagame)
 
+    # ── gui ──
+    p_gui = sub.add_parser("gui", help="Launch the interactive Streamlit GUI")
+    p_gui.set_defaults(func=lambda _args: os.system(
+        f'python -m streamlit run "{os.path.join(os.path.dirname(__file__), "gui.py")}"'
+    ))
+
     args = parser.parse_args()
     args.func(args)
 
