@@ -34,6 +34,7 @@ from sklearn.metrics import (
 
 import config
 from feature_engineer import build_feature_dataframe, get_feature_columns
+from sample_weights import compute_sample_weights
 
 
 BULK_THRESHOLD = config.TWOSTAGE_BULK_THRESHOLD  # €0.50
@@ -66,8 +67,8 @@ def train_twostage(
     print(f"  Bulk (≤€{BULK_THRESHOLD}): {is_bulk.sum():,}  "
           f"Non-bulk: {(~is_bulk.astype(bool)).sum():,}")
 
-    # Sample weights
-    weights = _compute_sample_weights(df, y)
+    # Sample weights (V4 — centralised, capped)
+    weights = compute_sample_weights(df, y)
 
     # Temporal split
     if "_days_since_release" in df.columns:
@@ -196,7 +197,9 @@ def train_twostage(
     joblib.dump(reg, config.TWOSTAGE_REGRESSOR_PATH)
     joblib.dump(scaler, config.TWOSTAGE_SCALER_PATH)
     joblib.dump(feature_cols, config.TWOSTAGE_FEATURE_COLS_PATH)
+    joblib.dump(float(bulk_median), config.TWOSTAGE_BULK_MEDIAN_PATH)
     print(f"Two-stage model saved to {config.MODEL_DIR}")
+    print(f"  Bulk median: €{bulk_median:.4f} → {config.TWOSTAGE_BULK_MEDIAN_PATH}")
 
     return metrics
 
@@ -311,7 +314,9 @@ def train_twostage_reserved_list(
     joblib.dump(reg, config.TWOSTAGE_RL_REGRESSOR_PATH)
     joblib.dump(scaler, config.TWOSTAGE_RL_SCALER_PATH)
     joblib.dump(feature_cols, config.TWOSTAGE_RL_FEATURE_COLS_PATH)
+    joblib.dump(float(bulk_median), config.TWOSTAGE_RL_BULK_MEDIAN_PATH)
     print(f"  Two-Stage RL saved to {config.MODEL_DIR}")
+    print(f"  RL Bulk median: €{bulk_median:.4f} → {config.TWOSTAGE_RL_BULK_MEDIAN_PATH}")
 
     return metrics
 
@@ -333,17 +338,6 @@ def load_twostage_reserved_list_model():
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
-
-def _compute_sample_weights(df, y):
-    weights = pd.Series(1.0, index=df.index)
-    for r, w in config.RARITY_WEIGHTS.items():
-        col = f"rarity_{r}"
-        if col in df.columns:
-            weights.loc[df[col] == 1] = w
-    weights.loc[y > config.PRICE_WEIGHT_THRESHOLD] *= config.PRICE_WEIGHT_FACTOR
-    weights.loc[y > 20.0] *= 2.0
-    return weights
-
 
 def _evaluate(y_true, y_pred):
     y_t, y_p = np.array(y_true), np.array(y_pred)

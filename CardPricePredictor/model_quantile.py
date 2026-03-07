@@ -27,6 +27,7 @@ from sklearn.metrics import (
 
 import config
 from feature_engineer import build_feature_dataframe, get_feature_columns
+from sample_weights import compute_sample_weights
 
 
 QUANTILES = [0.10, 0.50, 0.90]
@@ -68,7 +69,7 @@ def train_quantile(
     y = df["price_eur"].copy()
     y_log = np.log1p(y)
 
-    weights = _compute_sample_weights(df, y)
+    weights = compute_sample_weights(df, y)
 
     # Temporal split
     if "_days_since_release" in df.columns:
@@ -264,17 +265,6 @@ def load_quantile_reserved_list_models():
 
 
 # ─── Evaluation helpers ─────────────────────────────────────────────────────
-
-def _compute_sample_weights(df, y):
-    weights = pd.Series(1.0, index=df.index)
-    for r, w in config.RARITY_WEIGHTS.items():
-        col = f"rarity_{r}"
-        if col in df.columns:
-            weights.loc[df[col] == 1] = w
-    weights.loc[y > config.PRICE_WEIGHT_THRESHOLD] *= config.PRICE_WEIGHT_FACTOR
-    weights.loc[y > 20.0] *= 2.0
-    return weights
-
 
 def _evaluate_quantile(y_true, preds):
     y_t = np.array(y_true)

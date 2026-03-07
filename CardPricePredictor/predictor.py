@@ -15,6 +15,7 @@ import os
 import time
 from typing import Optional, Union
 
+import joblib
 import numpy as np
 import pandas as pd
 import requests
@@ -549,7 +550,11 @@ def predict_card_twostage(
     is_bulk = clf.predict(X)[0]
 
     if is_bulk == 1:
-        pred_price = config.TWOSTAGE_BULK_THRESHOLD * 0.20  # ~€0.10
+        # Use the training-set bulk median (persisted during training)
+        if os.path.exists(config.TWOSTAGE_BULK_MEDIAN_PATH):
+            pred_price = joblib.load(config.TWOSTAGE_BULK_MEDIAN_PATH)
+        else:
+            pred_price = config.TWOSTAGE_BULK_THRESHOLD * 0.20  # fallback ~€0.10
     else:
         pred_log = reg.predict(X)[0]
         pred_price = max(float(np.expm1(pred_log)), 0.01)
@@ -650,6 +655,157 @@ def predict_card_quantile(
     return result
 
 
+def predict_card_highend(
+    card_name: Optional[str] = None,
+    card_dict: Optional[dict] = None,
+    set_code: Optional[str] = None,
+    verbose: bool = True,
+) -> dict:
+    """Predict price using the High-End specialist model (trained on >€10)."""
+    from model_highend import (
+        load_highend_model, load_highend_reserved_list_model,
+        HIGHEND_MODEL_PATH, HIGHEND_RL_MODEL_PATH,
+    )
+
+    if card_dict is None:
+        if card_name is None:
+            raise ValueError("Provide either `card_name` or `card_dict`.")
+        card_dict = _fetch_card(card_name, set_code)
+
+    card_dict = _enrich_single_card(card_dict)
+    row = _card_to_row(card_dict)
+    row_df = pd.DataFrame([row])
+    row_df = apply_tfidf_svd(row_df, card_dict.get("oracle_text", ""))
+
+    is_reserved = card_dict.get("reserved", False)
+    if is_reserved and os.path.exists(HIGHEND_RL_MODEL_PATH):
+        model, scaler, feature_cols = load_highend_reserved_list_model()
+        model_used = "highend_reserved_list"
+    else:
+        model, scaler, feature_cols = load_highend_model()
+        model_used = "highend_main"
+
+    for col in feature_cols:
+        if col not in row_df.columns:
+            row_df[col] = 0
+    row_df = row_df[feature_cols]
+
+    X = scaler.transform(row_df)
+    pred_log = model.predict(X)[0]
+    pred_price = max(float(np.expm1(pred_log)), 0.01)
+
+    current = card_dict.get("prices", {}).get(config.PRICE_FIELD)
+    current_price = float(current) if current else None
+
+    result = {
+        "card_name": card_dict.get("name", "Unknown"),
+        "set": card_dict.get("set_name", "Unknown"),
+        "set_code": card_dict.get("set", "???"),
+        "rarity": card_dict.get("rarity", "unknown"),
+        "predicted_price_eur": round(pred_price, 2),
+        "current_price_eur": round(current_price, 2) if current_price else None,
+        "mana_cost": card_dict.get("mana_cost", ""),
+        "type_line": card_dict.get("type_line", ""),
+        "model_used": model_used,
+    }
+
+    if verbose:
+        print(f"\n  [High-End model: {model_used}]")
+        _print_prediction(result)
+
+    return result
+
+
+def predict_card_ensemble(
+    card_name: Optional[str] = None,
+    card_dict: Optional[dict] = None,
+    set_code: Optional[str] = None,
+    verbose: bool = True,
+) -> dict:
+    """
+    Predict price using a log-space weighted ensemble of top models.
+    Uses weights from the evaluation optimization (ensemble_weights.joblib).
+    Falls back to default weights if the optimized file doesn't exist.
+    """
+    if card_dict is None:
+        if card_name is None:
+            raise ValueError("Provide either `card_name` or `card_dict`.")
+        card_dict = _fetch_card(card_name, set_code)
+
+    card_dict = _enrich_single_card(card_dict)
+
+    # Load weights
+    ens_weights_path = os.path.join(config.MODEL_DIR, "ensemble_weights.joblib")
+    if os.path.exists(ens_weights_path):
+        info = joblib.load(ens_weights_path)
+        names = info["names"]
+        weights = np.array(info["weights"])
+    else:
+        # Default fallback
+        names = ["Quantile", "LightGBM", "Random Forest", "CatBoost"]
+        weights = np.array([0.40, 0.25, 0.20, 0.15])
+
+    # Map model names → predict functions
+    _name_to_func = {
+        "Quantile":      predict_card_quantile,
+        "LightGBM":      predict_card_lgbm,
+        "Random Forest":  predict_card_rf,
+        "CatBoost":      predict_card_catboost,
+        "XGBoost":       predict_card,
+        "Two-Stage":     predict_card_twostage,
+    }
+
+    log_preds = []
+    used_weights = []
+    used_names = []
+
+    for name, w in zip(names, weights):
+        fn = _name_to_func.get(name)
+        if fn is None:
+            continue
+        try:
+            r = fn(card_dict=card_dict, verbose=False)
+            pred = r.get("predicted_price_eur")
+            if pred is not None and pred > 0:
+                log_preds.append(np.log1p(pred))
+                used_weights.append(w)
+                used_names.append(name)
+        except Exception:
+            continue
+
+    if not log_preds:
+        raise RuntimeError("No ensemble models available.")
+
+    # Normalise weights in case some models failed
+    w_arr = np.array(used_weights)
+    w_arr = w_arr / w_arr.sum()
+
+    blend_log = np.dot(log_preds, w_arr)
+    pred_price = max(float(np.expm1(blend_log)), 0.01)
+
+    current = card_dict.get("prices", {}).get(config.PRICE_FIELD)
+    current_price = float(current) if current else None
+
+    result = {
+        "card_name": card_dict.get("name", "Unknown"),
+        "set": card_dict.get("set_name", "Unknown"),
+        "set_code": card_dict.get("set", "???"),
+        "rarity": card_dict.get("rarity", "unknown"),
+        "predicted_price_eur": round(pred_price, 2),
+        "current_price_eur": round(current_price, 2) if current_price else None,
+        "mana_cost": card_dict.get("mana_cost", ""),
+        "type_line": card_dict.get("type_line", ""),
+        "model_used": f"ensemble({'+'.join(used_names)})",
+        "ensemble_weights": dict(zip(used_names, w_arr.tolist())),
+    }
+
+    if verbose:
+        print(f"\n  [Ensemble: {' + '.join(f'{n}({w:.0%})' for n, w in zip(used_names, w_arr))}]")
+        _print_prediction(result)
+
+    return result
+
+
 # ─── All-models prediction ──────────────────────────────────────────────────
 
 _MODEL_REGISTRY = [
@@ -662,6 +818,9 @@ _MODEL_REGISTRY = [
     ("CatBoost",   "predict_card_catboost",  config.CATBOOST_MODEL_PATH),
     ("TwoStage",   "predict_card_twostage",  config.TWOSTAGE_CLASSIFIER_PATH),
     ("Quantile",   "predict_card_quantile",  config.QUANTILE_MODEL_P50_PATH),
+    ("HighEnd",    "predict_card_highend",
+     os.path.join(config.MODEL_DIR, "highend_model.joblib")),
+    ("Ensemble",   "predict_card_ensemble",  config.LGBM_MODEL_PATH),  # needs ≥2 base models
 ]
 
 

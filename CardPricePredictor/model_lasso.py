@@ -34,6 +34,7 @@ from sklearn.metrics import (
 
 import config
 from feature_engineer import build_feature_dataframe, get_feature_columns
+from sample_weights import compute_sample_weights
 
 
 # ─── Public API ──────────────────────────────────────────────────────────────
@@ -69,8 +70,8 @@ def train_lasso(
     # Log-transform the target
     y_log = np.log1p(y)
 
-    # 2. Sample weights
-    weights = _compute_sample_weights(df, y)
+    # 2. Sample weights (V4 — centralised, capped)
+    weights = compute_sample_weights(df, y)
     print(f"\nSample weight stats:")
     print(f"  min={weights.min():.2f}  max={weights.max():.2f}  "
           f"mean={weights.mean():.2f}  median={np.median(weights):.2f}")
@@ -275,21 +276,6 @@ def load_lasso_reserved_list_model():
     feature_cols = joblib.load(config.LASSO_RL_FEATURE_COLS_PATH)
     return model, scaler, feature_cols
 
-
-# ─── Sample weighting (same logic as XGBoost model) ─────────────────────────
-
-def _compute_sample_weights(df: pd.DataFrame, y: pd.Series) -> pd.Series:
-    weights = pd.Series(1.0, index=df.index)
-    for r, w in config.RARITY_WEIGHTS.items():
-        col = f"rarity_{r}"
-        if col in df.columns:
-            mask = df[col] == 1
-            weights.loc[mask] = w
-    expensive_mask = y > config.PRICE_WEIGHT_THRESHOLD
-    weights.loc[expensive_mask] *= config.PRICE_WEIGHT_FACTOR
-    very_expensive = y > 20.0
-    weights.loc[very_expensive] *= 2.0
-    return weights
 
 
 def _get_rarity_labels(df: pd.DataFrame) -> pd.Series:
