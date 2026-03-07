@@ -87,12 +87,25 @@ def build_feature_dataframe(cards: list[dict]) -> pd.DataFrame:
 
     df = df.reset_index(drop=True)
 
-    # ── TF-IDF + SVD on oracle text ────────────────────────────────────────
-    # Fit a TF-IDF vectorizer on the oracle text corpus, reduce to dense
-    # components with TruncatedSVD, and append them as features.
+    # ── TF-IDF + SVD on oracle text (LEAK-FREE) ──────────────────────────
+    # Fit TF-IDF only on training rows (temporal split) to prevent data
+    # leakage, then transform the entire corpus.
     n_components = config.TFIDF_N_COMPONENTS
     if "_oracle_text" in df.columns:
         corpus = df["_oracle_text"].fillna("").astype(str)
+
+        # Identify training rows via the same temporal split used by models
+        if "_days_since_release" in df.columns:
+            sort_idx = df["_days_since_release"].values.argsort()[::-1]
+            n_train = int(len(sort_idx) * (1 - config.TEST_SIZE))
+            train_idx = sort_idx[:n_train]
+            print(f"TF-IDF: fitting on {len(train_idx):,} training rows (leak-free)")
+        else:
+            train_idx = np.arange(int(len(df) * 0.8))
+            print("TF-IDF: no temporal column — using first 80% for fit")
+        train_corpus = corpus.iloc[train_idx]
+
+        # ── Word n-grams (1,2) — fit on TRAIN only ─────────────────
         tfidf_svd = Pipeline([
             ("tfidf", TfidfVectorizer(
                 analyzer="word",
@@ -105,14 +118,37 @@ def build_feature_dataframe(cards: list[dict]) -> pd.DataFrame:
             )),
             ("svd", TruncatedSVD(n_components=n_components, random_state=42)),
         ])
-        svd_matrix = tfidf_svd.fit_transform(corpus)
+        tfidf_svd.fit(train_corpus)                 # FIT on train only
+        svd_matrix = tfidf_svd.transform(corpus)    # TRANSFORM all rows
         svd_cols = [f"tfidf_svd_{i}" for i in range(n_components)]
         svd_df = pd.DataFrame(svd_matrix, columns=svd_cols, index=df.index)
         df = pd.concat([df, svd_df], axis=1)
 
-        # Persist the fitted pipeline for inference
         joblib.dump(tfidf_svd, config.TFIDF_SVD_PATH)
-        print(f"TF-IDF + SVD: {n_components} components fitted and saved to {config.TFIDF_SVD_PATH}")
+        print(f"TF-IDF word + SVD: {n_components} components → {config.TFIDF_SVD_PATH}")
+
+        # ── Char n-grams (3,5) — fit on TRAIN only ─────────────────
+        n_char_components = config.TFIDF_CHAR_N_COMPONENTS
+        tfidf_char_svd = Pipeline([
+            ("tfidf", TfidfVectorizer(
+                analyzer="char_wb",
+                ngram_range=(3, 5),
+                max_features=8000,
+                sublinear_tf=True,
+                min_df=5,
+                max_df=0.95,
+                strip_accents="unicode",
+            )),
+            ("svd", TruncatedSVD(n_components=n_char_components, random_state=42)),
+        ])
+        tfidf_char_svd.fit(train_corpus)                     # FIT on train only
+        char_svd_matrix = tfidf_char_svd.transform(corpus)   # TRANSFORM all rows
+        char_svd_cols = [f"tfidf_char_svd_{i}" for i in range(n_char_components)]
+        char_svd_df = pd.DataFrame(char_svd_matrix, columns=char_svd_cols, index=df.index)
+        df = pd.concat([df, char_svd_df], axis=1)
+
+        joblib.dump(tfidf_char_svd, config.TFIDF_CHAR_SVD_PATH)
+        print(f"TF-IDF char(3,5) + SVD: {n_char_components} components → {config.TFIDF_CHAR_SVD_PATH}")
     else:
         print("⚠ _oracle_text column missing — skipping TF-IDF + SVD")
 
@@ -134,32 +170,40 @@ def get_feature_columns(df: pd.DataFrame) -> list[str]:
 # ─── TF-IDF + SVD inference helper ──────────────────────────────────────────
 
 _tfidf_svd_cache = None  # module-level cache
+_tfidf_char_svd_cache = None  # char n-gram cache
 
 
 def apply_tfidf_svd(row_df: pd.DataFrame, oracle_text: str) -> pd.DataFrame:
     """
-    Apply the fitted TF-IDF + SVD pipeline to a single card's oracle text
-    and add the SVD component columns to the row DataFrame.
+    Apply the fitted TF-IDF + SVD pipelines (word AND char n-grams) to a
+    single card's oracle text and add the SVD component columns to the row
+    DataFrame.
 
-    Used at inference time (predictor.py) — the pipeline must have been
+    Used at inference time (predictor.py) — the pipelines must have been
     fitted during training via build_feature_dataframe().
     """
-    global _tfidf_svd_cache
+    global _tfidf_svd_cache, _tfidf_char_svd_cache
     import os
 
-    if not os.path.exists(config.TFIDF_SVD_PATH):
-        # Pipeline not fitted yet — return row as-is (columns will be filled
-        # with 0 during feature alignment in predict_card*)
-        return row_df
+    # ── Word n-grams ──
+    if os.path.exists(config.TFIDF_SVD_PATH):
+        if _tfidf_svd_cache is None:
+            _tfidf_svd_cache = joblib.load(config.TFIDF_SVD_PATH)
+        pipeline = _tfidf_svd_cache
+        n_components = pipeline.named_steps["svd"].n_components
+        svd_values = pipeline.transform([oracle_text])[0]
+        for i in range(n_components):
+            row_df[f"tfidf_svd_{i}"] = svd_values[i]
 
-    if _tfidf_svd_cache is None:
-        _tfidf_svd_cache = joblib.load(config.TFIDF_SVD_PATH)
-
-    pipeline = _tfidf_svd_cache
-    n_components = pipeline.named_steps["svd"].n_components
-    svd_values = pipeline.transform([oracle_text])[0]
-    for i in range(n_components):
-        row_df[f"tfidf_svd_{i}"] = svd_values[i]
+    # ── Char n-grams ──
+    if os.path.exists(config.TFIDF_CHAR_SVD_PATH):
+        if _tfidf_char_svd_cache is None:
+            _tfidf_char_svd_cache = joblib.load(config.TFIDF_CHAR_SVD_PATH)
+        pipeline_char = _tfidf_char_svd_cache
+        n_char = pipeline_char.named_steps["svd"].n_components
+        char_values = pipeline_char.transform([oracle_text])[0]
+        for i in range(n_char):
+            row_df[f"tfidf_char_svd_{i}"] = char_values[i]
 
     return row_df
 
@@ -223,6 +267,7 @@ def _card_to_row(card: dict) -> dict:
 
     # ── Metadata (excluded from features by underscore prefix) ─
     row["_oracle_text"] = card.get("oracle_text", "")
+    row["_oracle_id"] = card.get("oracle_id", "")
 
     # Categorical metadata for CatBoost (also excluded by underscore prefix)
     row["_cat_rarity"] = card.get("rarity", "common")
@@ -431,6 +476,8 @@ def _card_to_row(card: dict) -> dict:
     row["txt_choose_one"] = int(bool(re.search(
         r"choose (?:one|two|three)", _ol
     )))
+    # Count of choice modes (• bullets) — richer than the binary flag above
+    row["text_num_choices"] = _ol.count("\u2022")  # count bullet "•" characters
     row["text_num_sentences"] = len(re.findall(r"[.!]\s", oracle)) + (1 if oracle.strip() else 0)
     row["txt_x_count"] = _ol.count(" x ")  # scaling cue ("X" in costs/effects)
     row["txt_each_count"] = _ol.count("each")  # scaling: "for each", "each opponent"

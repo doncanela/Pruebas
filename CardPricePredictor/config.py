@@ -83,6 +83,8 @@ TWOSTAGE_RL_REGRESSOR_PATH = os.path.join(MODEL_DIR, "twostage_rl_regressor.jobl
 TWOSTAGE_RL_SCALER_PATH = os.path.join(MODEL_DIR, "twostage_rl_scaler.joblib")
 TWOSTAGE_RL_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "twostage_rl_feature_columns.joblib")
 TWOSTAGE_BULK_THRESHOLD = 0.50  # € — bulk vs non-bulk boundary
+TWOSTAGE_BULK_MEDIAN_PATH = os.path.join(MODEL_DIR, "twostage_bulk_median.joblib")
+TWOSTAGE_RL_BULK_MEDIAN_PATH = os.path.join(MODEL_DIR, "twostage_rl_bulk_median.joblib")
 
 # Quantile regression model (LightGBM quantile)
 QUANTILE_MODEL_P10_PATH = os.path.join(MODEL_DIR, "quantile_p10.joblib")
@@ -98,7 +100,11 @@ QUANTILE_RL_FEATURE_COLS_PATH = os.path.join(MODEL_DIR, "quantile_rl_feature_col
 
 # TF-IDF + SVD text pipeline (shared by all models)
 TFIDF_SVD_PATH = os.path.join(MODEL_DIR, "tfidf_svd_pipeline.joblib")
-TFIDF_N_COMPONENTS = 50  # number of SVD dimensions
+TFIDF_N_COMPONENTS = 200  # number of SVD dimensions for word n-grams
+
+# TF-IDF char n-grams + SVD (captures templating / subword patterns)
+TFIDF_CHAR_SVD_PATH = os.path.join(MODEL_DIR, "tfidf_char_svd_pipeline.joblib")
+TFIDF_CHAR_N_COMPONENTS = 100  # number of SVD dimensions for char n-grams
 
 # ─── Scryfall API ────────────────────────────────────────────────────────────
 SCRYFALL_BULK_URL = "https://api.scryfall.com/bulk-data"
@@ -166,6 +172,14 @@ RARITY_WEIGHTS = {
 # Additional price-based weight: cards above this get extra weight
 PRICE_WEIGHT_THRESHOLD = 2.0   # € — cards above this get boosted
 PRICE_WEIGHT_FACTOR = 3.0      # multiplier for expensive cards
+
+# ─── V4: Weight capping & log scaling ─────────────────────────────────────────
+# Hard cap on sample weights (max was 60 in V3 → now capped at 25).
+# Set to None to disable capping.
+WEIGHT_CAP = 25.0
+# If True, applies log scaling after cap: w → 1 + log(w).
+# Compresses the dynamic range while preserving ordering.
+WEIGHT_LOG_SCALE = False
 
 # ─── Model hyper-parameters (XGBoost) ────────────────────────────────────────
 XGBOOST_PARAMS = {
@@ -283,8 +297,8 @@ TABNET_RL_FIT_PARAMS = {
 
 # ─── Elastic Net hyper-parameters ────────────────────────────────────────────
 ELASTICNET_PARAMS = {
-    "l1_ratio": [0.1, 0.3, 0.5, 0.7, 0.9],  # mix L1 / L2
-    "cv": 5,
+    "l1_ratio": [0.1, 0.5, 0.9],  # mix L1 / L2 (reduced for speed)
+    "cv": 3,
     "max_iter": 20_000,
     "tol": 1e-4,
     "random_state": 42,
@@ -296,16 +310,16 @@ LGBM_PARAMS = {
     "n_estimators": 3000,
     "max_depth": 8,
     "learning_rate": 0.03,
-    "num_leaves": 127,
-    "subsample": 0.75,
-    "colsample_bytree": 0.65,
+    "num_leaves": 255,
+    "subsample": 0.85,
+    "colsample_bytree": 0.85,
     "reg_alpha": 1.0,
     "reg_lambda": 3.0,
-    "min_child_samples": 20,
+    "min_child_samples": 7,
     "random_state": 42,
     "n_jobs": -1,
     "verbose": -1,
-    "objective": "huber",
+    "objective": "regression_l1",
 }
 
 LGBM_RL_PARAMS = {

@@ -30,6 +30,7 @@ from xgboost import XGBRegressor
 
 import config
 from feature_engineer import build_feature_dataframe, get_feature_columns
+from sample_weights import compute_sample_weights
 
 
 # ─── Public API ──────────────────────────────────────────────────────────────
@@ -65,8 +66,8 @@ def train(
     # Log-transform the target to handle heavy right skew in card prices
     y_log = np.log1p(y)
 
-    # 2. Compute sample weights
-    weights = _compute_sample_weights(df, y)
+    # 2. Compute sample weights (V4 — centralised, capped)
+    weights = compute_sample_weights(df, y)
     print(f"\nSample weight stats:")
     print(f"  min={weights.min():.2f}  max={weights.max():.2f}  "
           f"mean={weights.mean():.2f}  median={np.median(weights):.2f}")
@@ -385,33 +386,6 @@ def _two_stage_predict(
     print(f"  Specialist saved to {specialist_path}")
 
     return y_pred_combined
-
-
-# ─── Sample weighting ───────────────────────────────────────────────────────
-
-def _compute_sample_weights(df: pd.DataFrame, y: pd.Series) -> pd.Series:
-    """
-    Compute per-sample weights that up-weight rare/mythic cards
-    and expensive cards so the model focuses more on them.
-    """
-    weights = pd.Series(1.0, index=df.index)
-
-    # 1. Rarity-based weight
-    for r, w in config.RARITY_WEIGHTS.items():
-        col = f"rarity_{r}"
-        if col in df.columns:
-            mask = df[col] == 1
-            weights.loc[mask] = w
-
-    # 2. Price-based weight: boost cards above the threshold
-    expensive_mask = y > config.PRICE_WEIGHT_THRESHOLD
-    weights.loc[expensive_mask] *= config.PRICE_WEIGHT_FACTOR
-
-    # 3. Extra boost for very expensive cards (€20+)
-    very_expensive = y > 20.0
-    weights.loc[very_expensive] *= 2.0
-
-    return weights
 
 
 def _get_rarity_labels(df: pd.DataFrame) -> pd.Series:

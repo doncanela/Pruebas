@@ -491,6 +491,55 @@ def cmd_predict_quantile(args):
     predict_card_quantile(card_name=args.name, set_code=args.set)
 
 
+def cmd_train_highend(args):
+    """Feature-engineer and train the High-End specialist model."""
+    from model_highend import train_highend, train_highend_reserved_list
+    import pandas as pd
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — High-End Model Training")
+    print("=" * 60)
+
+    if os.path.exists(config.FEATURES_PATH) and not args.rebuild_features:
+        print(f"Loading pre-built features from {config.FEATURES_PATH}")
+        df = pd.read_csv(config.FEATURES_PATH)
+    elif os.path.exists(config.RAW_DATA_PATH):
+        print("Building features from raw card data …")
+        with open(config.RAW_DATA_PATH, "r", encoding="utf-8") as f:
+            cards = json.load(f)
+        from feature_engineer import build_feature_dataframe
+        df = build_feature_dataframe(cards)
+    else:
+        print("ERROR: No data found. Run 'collect' first.")
+        sys.exit(1)
+
+    print("\n" + "─" * 60)
+    print("  STAGE 1: High-End main model (non-Reserved List)")
+    print("─" * 60)
+    train_highend(df=df)
+
+    print("\n" + "─" * 60)
+    print("  STAGE 2: High-End Reserved List specialist model")
+    print("─" * 60)
+    train_highend_reserved_list(df=df)
+
+
+def cmd_predict_highend(args):
+    """Predict price using the High-End specialist model."""
+    from predictor import predict_card_highend
+
+    print("=" * 60)
+    print("  MTG Card Price Predictor — High-End Prediction")
+    print("=" * 60)
+
+    from model_highend import HIGHEND_MODEL_PATH
+    if not os.path.exists(HIGHEND_MODEL_PATH):
+        print("ERROR: No trained High-End model. Run 'train-highend' first.")
+        sys.exit(1)
+
+    predict_card_highend(card_name=args.name, set_code=args.set)
+
+
 def cmd_predict(args):
     """Predict price for a single card using ALL available models."""
     from predictor import predict_card_all
@@ -846,6 +895,17 @@ def main():
     p_pred_q.add_argument("name", type=str, help="Card name (English)")
     p_pred_q.add_argument("--set", type=str, default=None, help="3-letter set code")
     p_pred_q.set_defaults(func=cmd_predict_quantile)
+
+    # ── train-highend ──
+    p_train_he = sub.add_parser("train-highend", help="Train the High-End specialist model (>€10)")
+    p_train_he.add_argument("--rebuild-features", action="store_true")
+    p_train_he.set_defaults(func=cmd_train_highend)
+
+    # ── predict-highend ──
+    p_pred_he = sub.add_parser("predict-highend", help="Predict price using the High-End specialist")
+    p_pred_he.add_argument("name", type=str, help="Card name (English)")
+    p_pred_he.add_argument("--set", type=str, default=None, help="3-letter set code")
+    p_pred_he.set_defaults(func=cmd_predict_highend)
 
     # ── predict ──
     p_predict = sub.add_parser("predict", help="Predict a card's price")
